@@ -166,8 +166,6 @@ const HcuScheduleSystem = () => {
   
   // 勤務表データ
   const [schedule, setSchedule] = useState<any>(null);
-  // 「夜」選択時に翌日を自動「明」にした際の元の値を保存
-  const [autoAkeBackup, setAutoAkeBackup] = useState<Record<string, string | null>>({});
   
   // UI状態
   const [showSettings, setShowSettings] = useState(false);
@@ -2843,48 +2841,41 @@ const HcuScheduleSystem = () => {
           }
 
           // セル編集ハンドラ（schedule未生成時は自動作成）
+          // 方式: 「夜」設定時→翌日「明」翌々日「休」を自動セット
+          //       「夜」解除時→翌日が「明」なら空に、翌々日が「休」なら空に自動クリア
+          //       バックアップ不要（DB読み込み後も常に正しく動作）
           const handleCellClick = (nurseId: any, dayIndex: number, currentShift: string | null) => {
             const CYCLE = ['日', '夜', '休', '有', null];
             const currentIdx = currentShift ? CYCLE.indexOf(currentShift) : -1;
             const nextIdx = (currentShift === '明') ? CYCLE.indexOf('休') : (currentIdx >= 0 ? (currentIdx + 1) % CYCLE.length : 0);
             const newShift = CYCLE[nextIdx];
-            const prevShift = currentShift;
 
             const updateData = (data: any) => {
               const newData = JSON.parse(JSON.stringify(data));
               if (!newData[nurseId]) newData[nurseId] = new Array(daysInMonth).fill(null);
               
-              // 以前「夜」だった場合 → 翌日の「明」と翌々日の「休」をバックアップから復元
-              if (prevShift === '夜') {
+              // ① 「夜」から別のシフトに変更 → 翌日「明」・翌々日「休」を自動クリア
+              if (currentShift === '夜' && newShift !== '夜') {
                 if (dayIndex + 1 < daysInMonth && newData[nurseId][dayIndex + 1] === '明') {
-                  const bk1 = `sched-${nurseId}-${dayIndex + 1}`;
-                  const origVal1 = autoAkeBackup[bk1] ?? null;
-                  newData[nurseId][dayIndex + 1] = origVal1;
-                  updateScheduleCellInDB(nurseId, targetYear, targetMonth, dayIndex + 2, origVal1);
-                  setAutoAkeBackup(prev => { const n = {...prev}; delete n[bk1]; return n; });
+                  newData[nurseId][dayIndex + 1] = null;
+                  updateScheduleCellInDB(nurseId, targetYear, targetMonth, dayIndex + 2, null);
                 }
                 if (dayIndex + 2 < daysInMonth && newData[nurseId][dayIndex + 2] === '休') {
-                  const bk2 = `sched-${nurseId}-${dayIndex + 2}`;
-                  const origVal2 = autoAkeBackup[bk2] ?? null;
-                  newData[nurseId][dayIndex + 2] = origVal2;
-                  updateScheduleCellInDB(nurseId, targetYear, targetMonth, dayIndex + 3, origVal2);
-                  setAutoAkeBackup(prev => { const n = {...prev}; delete n[bk2]; return n; });
+                  newData[nurseId][dayIndex + 2] = null;
+                  updateScheduleCellInDB(nurseId, targetYear, targetMonth, dayIndex + 3, null);
                 }
               }
               
+              // ② クリックしたセルの値を更新
               newData[nurseId][dayIndex] = newShift;
               
-              // 「夜」を選択した場合 → 翌日・翌々日をバックアップして上書き
+              // ③ 新しいシフトが「夜」→ 翌日「明」・翌々日「休」を自動セット
               if (newShift === '夜') {
                 if (dayIndex + 1 < daysInMonth) {
-                  const bk1 = `sched-${nurseId}-${dayIndex + 1}`;
-                  setAutoAkeBackup(prev => ({...prev, [bk1]: newData[nurseId][dayIndex + 1]}));
                   newData[nurseId][dayIndex + 1] = '明';
                   updateScheduleCellInDB(nurseId, targetYear, targetMonth, dayIndex + 2, '明');
                 }
                 if (dayIndex + 2 < daysInMonth) {
-                  const bk2 = `sched-${nurseId}-${dayIndex + 2}`;
-                  setAutoAkeBackup(prev => ({...prev, [bk2]: newData[nurseId][dayIndex + 2]}));
                   newData[nurseId][dayIndex + 2] = '休';
                   updateScheduleCellInDB(nurseId, targetYear, targetMonth, dayIndex + 3, '休');
                 }
@@ -2899,7 +2890,6 @@ const HcuScheduleSystem = () => {
                 data: updateData(prev.data)
               }));
             } else {
-              // 未生成時：scheduleを新規作成
               const baseData = {};
               activeNurses.forEach(nurse => {
                 baseData[nurse.id] = scheduleDisplayData[nurse.id] ? [...scheduleDisplayData[nurse.id]] : new Array(daysInMonth).fill(null);
@@ -2912,39 +2902,42 @@ const HcuScheduleSystem = () => {
 
           return (
           <div className={`bg-white/90 backdrop-blur-sm shadow-lg border border-white/50 ${
-            isMaximized ? 'fixed inset-0 z-50 rounded-none p-4 overflow-y-auto' : 'rounded-2xl p-6'
+            isMaximized ? 'fixed inset-0 z-50 rounded-none p-2 overflow-y-auto' : 'rounded-2xl p-6'
           }`}>
-            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
-              <h2 className="text-xl font-bold text-gray-800">
+            <div className={`flex items-center justify-between ${isMaximized ? 'mb-1' : 'flex-col md:flex-row gap-4 mb-6'}`}>
+              <h2 className={`font-bold text-gray-800 ${isMaximized ? 'text-base' : 'text-xl'}`}>
                 {targetYear}年{targetMonth + 1}月 勤務表
-                {!schedule && <span className="ml-2 text-sm font-normal text-orange-600 bg-orange-50 px-2 py-1 rounded">未生成（手動編集可能）</span>}
+                {!schedule && <span className="ml-2 text-xs font-normal text-orange-600 bg-orange-50 px-2 py-0.5 rounded">未生成</span>}
               </h2>
               <div className="flex gap-2">
                 <button
                   onClick={() => setIsMaximized(!isMaximized)}
-                  className="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg flex items-center gap-2 transition-colors"
+                  className={`bg-gray-100 hover:bg-gray-200 rounded-lg flex items-center gap-1 transition-colors ${isMaximized ? 'px-2 py-1 text-xs' : 'px-4 py-2'}`}
                 >
-                  {isMaximized ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
-                  {isMaximized ? '元に戻す' : '最大化'}
+                  {isMaximized ? <Minimize2 size={14} /> : <Maximize2 size={18} />}
+                  {isMaximized ? '戻す' : '最大化'}
                 </button>
                 <button
                   onClick={exportToExcel}
-                  className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg flex items-center gap-2 transition-colors"
+                  className={`bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg flex items-center gap-1 transition-colors ${isMaximized ? 'px-2 py-1 text-xs' : 'px-4 py-2'}`}
                 >
-                  <Download size={18} />
+                  <Download size={isMaximized ? 14 : 18} />
                   Excel出力
                 </button>
               </div>
             </div>
 
-            {/* 手動編集の説明 */}
+            {/* 手動編集の説明（最大化時は非表示） */}
+            {!isMaximized && (
             <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 mb-4">
               <p className="text-sm text-blue-800">
                 <strong>💡 手動編集：</strong>セルをクリックすると「日」→「夜」→「休」→「有」→「空」と切り替わります。「夜」選択時は翌日が自動で「明」、翌々日が自動で「休」になります。
               </p>
             </div>
+            )}
 
-            {/* 希望・前月制約の反映状態 */}
+            {/* 希望・前月制約の反映状態（最大化時は非表示） */}
+            {!isMaximized && (
             <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 mb-4">
               <p className="text-sm text-gray-700 mb-2">
                 <strong>🔍 希望・前月制約の反映状態：</strong>
@@ -2972,12 +2965,13 @@ const HcuScheduleSystem = () => {
                 </div>
               </div>
             </div>
+            )}
             
-            <div className={`overflow-auto border rounded-lg ${isMaximized ? 'max-h-[calc(100vh-280px)]' : 'max-h-[70vh]'}`}>
-              <table className="w-full border-collapse text-sm">
+            <div className={`overflow-auto border rounded-lg ${isMaximized ? 'max-h-[calc(100vh-52px)]' : 'max-h-[70vh]'}`}>
+              <table className={`w-full border-collapse ${isMaximized ? 'text-[11px]' : 'text-sm'}`}>
                 <thead className="sticky top-0 z-20">
                   <tr className="bg-gray-100">
-                    <th className="border p-2 sticky left-0 bg-gray-100 z-30">氏名</th>
+                    <th className={`border sticky left-0 bg-gray-100 z-30 whitespace-nowrap text-left ${isMaximized ? 'px-1 py-0.5 text-[11px] min-w-[110px]' : 'p-2'}`}>氏名</th>
                     {Array.from({ length: daysInMonth }, (_, i) => {
                       const day = i + 1;
                       const dow = getDayOfWeek(targetYear, targetMonth, day);
@@ -2985,26 +2979,25 @@ const HcuScheduleSystem = () => {
                       return (
                         <th
                           key={day}
-                          className={`border p-1 min-w-[32px] ${isHoliday ? 'bg-red-50' : 'bg-gray-100'}`}
+                          className={`border ${isMaximized ? 'px-0 py-0 min-w-[20px]' : 'p-1 min-w-[32px]'} ${isHoliday ? 'bg-red-50' : 'bg-gray-100'}`}
                         >
-                          <div className={`text-xs ${dow === '日' ? 'text-red-500' : dow === '土' ? 'text-blue-500' : ''}`}>
+                          <div className={`${isMaximized ? 'text-[9px] leading-none' : 'text-xs'} ${dow === '日' ? 'text-red-500' : dow === '土' ? 'text-blue-500' : ''}`}>
                             {dow}
                           </div>
-                          <div>{day}</div>
+                          <div className={isMaximized ? 'text-[10px] leading-none' : ''}>{day}</div>
                         </th>
                       );
                     })}
                     {/* 個人別統計ヘッダー */}
-                    <th className="border p-1 bg-purple-100 text-purple-800 text-xs sticky right-[72px] z-20">夜勤</th>
-                    <th className="border p-1 bg-blue-100 text-blue-800 text-xs sticky right-[48px] z-20">日勤</th>
-                    <th className="border p-1 bg-gray-200 text-gray-700 text-xs sticky right-[24px] z-20">休日</th>
-                    <th className="border p-1 bg-amber-100 text-amber-800 text-xs sticky right-0 z-20">出勤</th>
+                    <th className={`border bg-purple-100 text-purple-800 sticky z-20 ${isMaximized ? 'p-0 text-[9px] right-[54px]' : 'p-1 text-xs right-[72px]'}`}>夜</th>
+                    <th className={`border bg-blue-100 text-blue-800 sticky z-20 ${isMaximized ? 'p-0 text-[9px] right-[36px]' : 'p-1 text-xs right-[48px]'}`}>日</th>
+                    <th className={`border bg-gray-200 text-gray-700 sticky z-20 ${isMaximized ? 'p-0 text-[9px] right-[18px]' : 'p-1 text-xs right-[24px]'}`}>休</th>
+                    <th className={`border bg-amber-100 text-amber-800 sticky right-0 z-20 ${isMaximized ? 'p-0 text-[9px]' : 'p-1 text-xs'}`}>勤</th>
                   </tr>
                 </thead>
                 <tbody>
                   {activeNurses.map(nurse => {
                     const shifts = scheduleDisplayData[nurse.id] || [];
-                    // 個人別統計を計算
                     const stats = {
                       night: shifts.filter(s => s === '夜').length,
                       day: shifts.filter(s => s === '日').length,
@@ -3013,14 +3006,14 @@ const HcuScheduleSystem = () => {
                     };
                     
                     return (
-                      <tr key={nurse.id} className="hover:bg-gray-50">
-                        <td className="border p-2 sticky left-0 bg-white z-10 font-medium whitespace-nowrap">
-                          <span className={`text-xs px-1 py-0.5 rounded mr-1 ${POSITIONS[nurse.position]?.color}`}>
+                      <tr key={nurse.id} className={`hover:bg-gray-50 ${isMaximized ? 'leading-tight' : ''}`}>
+                        <td className={`border sticky left-0 bg-white z-10 font-medium whitespace-nowrap ${isMaximized ? 'px-1 py-px text-[11px] min-w-[110px]' : 'p-2'}`}>
+                          <span className={`${isMaximized ? 'text-[9px]' : 'text-[9px]'} px-0.5 rounded mr-0.5 ${POSITIONS[nurse.position]?.color}`}>
                             {nurse.position.charAt(0)}
                           </span>
                           {nurse.name}
-                          {nurseShiftPrefs[nurse.id]?.noNightShift && <span className="ml-1 text-[10px] bg-purple-100 text-purple-600 px-1 rounded">夜×</span>}
-                          {nurseShiftPrefs[nurse.id]?.noDayShift && <span className="ml-1 text-[10px] bg-blue-100 text-blue-600 px-1 rounded">日×</span>}
+                          {!isMaximized && nurseShiftPrefs[nurse.id]?.noNightShift && <span className="ml-1 text-[10px] bg-purple-100 text-purple-600 px-1 rounded">夜×</span>}
+                          {!isMaximized && nurseShiftPrefs[nurse.id]?.noDayShift && <span className="ml-1 text-[10px] bg-blue-100 text-blue-600 px-1 rounded">日×</span>}
                         </td>
                         {shifts.map((shift: any, i: number) => {
                           const day = i + 1;
@@ -3036,28 +3029,28 @@ const HcuScheduleSystem = () => {
                           <td
                             key={i}
                             onClick={() => handleCellClick(nurse.id, i, sanitizeShift(shift))}
-                            className={`border p-1 text-center cursor-pointer hover:bg-blue-50 transition-colors ${SHIFT_TYPES[shift]?.color || ''} ${
+                            className={`border text-center cursor-pointer hover:bg-blue-50 transition-colors ${isMaximized ? 'px-0 py-px' : 'p-1'} ${SHIFT_TYPES[shift]?.color || ''} ${
                               matchesRequest ? 'border-2 border-green-500' :
                               differsFromRequest ? 'border-2 border-red-400' :
                               differsFromPrev ? 'border-2 border-orange-400' : ''
                             }`}
-                            style={{ minWidth: '32px' }}
+                            style={{ minWidth: isMaximized ? '20px' : '32px' }}
                           >
-                            <div>{shift || ''}</div>
-                            {differsFromRequest && (
+                            <div className={isMaximized ? 'text-[11px] leading-none' : ''}>{shift || ''}</div>
+                            {!isMaximized && differsFromRequest && (
                               <div className="text-[9px] text-gray-400 leading-tight">元:{reqVal}</div>
                             )}
-                            {differsFromPrev && !reqVal && (
+                            {!isMaximized && differsFromPrev && !reqVal && (
                               <div className="text-[9px] text-orange-400 leading-tight">前:{prevCon}</div>
                             )}
                           </td>
                           );
                         })}
                         {/* 個人別統計 */}
-                        <td className="border p-1 text-center bg-purple-50 font-bold text-purple-700 sticky right-[72px] z-[5]">{stats.night}</td>
-                        <td className="border p-1 text-center bg-blue-50 font-bold text-blue-700 sticky right-[48px] z-[5]">{stats.day}</td>
-                        <td className="border p-1 text-center bg-gray-100 font-bold text-gray-600 sticky right-[24px] z-[5]">{stats.off}</td>
-                        <td className="border p-1 text-center bg-amber-50 font-bold text-amber-700 sticky right-0 z-[5]">{stats.work}</td>
+                        <td className={`border text-center bg-purple-50 font-bold text-purple-700 sticky z-[5] ${isMaximized ? 'p-0 text-[10px] right-[54px]' : 'p-1 right-[72px]'}`}>{stats.night}</td>
+                        <td className={`border text-center bg-blue-50 font-bold text-blue-700 sticky z-[5] ${isMaximized ? 'p-0 text-[10px] right-[36px]' : 'p-1 right-[48px]'}`}>{stats.day}</td>
+                        <td className={`border text-center bg-gray-100 font-bold text-gray-600 sticky z-[5] ${isMaximized ? 'p-0 text-[10px] right-[18px]' : 'p-1 right-[24px]'}`}>{stats.off}</td>
+                        <td className={`border text-center bg-amber-50 font-bold text-amber-700 sticky right-0 z-[5] ${isMaximized ? 'p-0 text-[10px]' : 'p-1'}`}>{stats.work}</td>
                       </tr>
                     );
                   })}
@@ -3066,7 +3059,7 @@ const HcuScheduleSystem = () => {
                 </tbody>
                 <tfoot className="sticky bottom-0 z-20">
                   <tr className="bg-purple-50 font-bold">
-                    <td className="border p-2 sticky left-0 bg-purple-50 z-30 text-purple-800">夜勤人数</td>
+                    <td className={`border sticky left-0 bg-purple-50 z-30 text-purple-800 ${isMaximized ? 'p-0.5 text-[10px]' : 'p-2'}`}>夜勤人数</td>
                     {Array.from({ length: daysInMonth }, (_, i) => {
                       let count = 0;
                       activeNurses.forEach(nurse => {
@@ -3074,15 +3067,15 @@ const HcuScheduleSystem = () => {
                         if (shift === '夜') count++;
                       });
                       return (
-                        <td key={i} className={`border p-1 text-center text-purple-700 ${count < 2 ? 'bg-red-200 text-red-700' : count > 3 ? 'bg-yellow-200 text-yellow-700' : ''}`}>
+                        <td key={i} className={`border text-center text-purple-700 ${isMaximized ? 'p-0 text-[10px]' : 'p-1'} ${count < 2 ? 'bg-red-200 text-red-700' : count > 3 ? 'bg-yellow-200 text-yellow-700' : ''}`}>
                           {count}
                         </td>
                       );
                     })}
-                    <td colSpan={4} className="border p-1"></td>
+                    <td colSpan={4} className={`border ${isMaximized ? 'p-0' : 'p-1'}`}></td>
                   </tr>
                   <tr className="bg-pink-50 font-bold">
-                    <td className="border p-2 sticky left-0 bg-pink-50 z-30 text-pink-800">夜明人数</td>
+                    <td className={`border sticky left-0 bg-pink-50 z-30 text-pink-800 ${isMaximized ? 'p-0.5 text-[10px]' : 'p-2'}`}>夜明人数</td>
                     {Array.from({ length: daysInMonth }, (_, i) => {
                       let count = 0;
                       activeNurses.forEach(nurse => {
@@ -3090,15 +3083,15 @@ const HcuScheduleSystem = () => {
                         if (shift === '明') count++;
                       });
                       return (
-                        <td key={i} className="border p-1 text-center text-pink-700">
+                        <td key={i} className={`border text-center text-pink-700 ${isMaximized ? 'p-0 text-[10px]' : 'p-1'}`}>
                           {count}
                         </td>
                       );
                     })}
-                    <td colSpan={4} className="border p-1"></td>
+                    <td colSpan={4} className={`border ${isMaximized ? 'p-0' : 'p-1'}`}></td>
                   </tr>
                   <tr className="bg-blue-50 font-bold">
-                    <td className="border p-2 sticky left-0 bg-blue-50 z-30 text-blue-800">日勤人数</td>
+                    <td className={`border sticky left-0 bg-blue-50 z-30 text-blue-800 ${isMaximized ? 'p-0.5 text-[10px]' : 'p-2'}`}>日勤人数</td>
                     {Array.from({ length: daysInMonth }, (_, i) => {
                       let count = 0;
                       activeNurses.forEach(nurse => {
@@ -3108,7 +3101,6 @@ const HcuScheduleSystem = () => {
                       const dow = getDayOfWeek(targetYear, targetMonth, i + 1);
                       const isWeekend = dow === '土' || dow === '日';
                       const day = i + 1;
-                      // 年末年始判定
                       const isYearEnd = targetMonth === 11 && (day === 30 || day === 31);
                       const isNewYear = targetMonth === 0 && (day >= 1 && day <= 3);
                       const minRequired = isYearEnd ? generateConfig.yearEndDayStaff :
@@ -3116,16 +3108,16 @@ const HcuScheduleSystem = () => {
                                           isWeekend ? generateConfig.weekendDayStaff :
                                           generateConfig.weekdayDayStaff;
                       return (
-                        <td key={i} className={`border p-1 text-center text-blue-700 ${count < minRequired ? 'bg-red-200 text-red-700' : count > minRequired + 2 ? 'bg-yellow-200 text-yellow-700' : ''}`}>
+                        <td key={i} className={`border text-center text-blue-700 ${isMaximized ? 'p-0 text-[10px]' : 'p-1'} ${count < minRequired ? 'bg-red-200 text-red-700' : count > minRequired + 2 ? 'bg-yellow-200 text-yellow-700' : ''}`}>
                           <div>{count}</div>
-                          <div className="text-[9px] text-gray-400">/{minRequired}</div>
+                          {!isMaximized && <div className="text-[9px] text-gray-400">/{minRequired}</div>}
                         </td>
                       );
                     })}
-                    <td colSpan={4} className="border p-1"></td>
+                    <td colSpan={4} className={`border ${isMaximized ? 'p-0' : 'p-1'}`}></td>
                   </tr>
                   <tr className="bg-gray-100 font-bold">
-                    <td className="border p-2 sticky left-0 bg-gray-100 z-30 text-gray-700">休日人数</td>
+                    <td className={`border sticky left-0 bg-gray-100 z-30 text-gray-700 ${isMaximized ? 'p-0.5 text-[10px]' : 'p-2'}`}>休日人数</td>
                     {Array.from({ length: daysInMonth }, (_, i) => {
                       let count = 0;
                       activeNurses.forEach(nurse => {
@@ -3133,15 +3125,15 @@ const HcuScheduleSystem = () => {
                         if (shift === '休' || shift === '有') count++;
                       });
                       return (
-                        <td key={i} className="border p-1 text-center text-gray-600">
+                        <td key={i} className={`border text-center text-gray-600 ${isMaximized ? 'p-0 text-[10px]' : 'p-1'}`}>
                           {count}
                         </td>
                       );
                     })}
-                    <td colSpan={4} className="border p-1"></td>
+                    <td colSpan={4} className={`border ${isMaximized ? 'p-0' : 'p-1'}`}></td>
                   </tr>
                   <tr className="bg-amber-50 font-bold">
-                    <td className="border p-2 sticky left-0 bg-amber-50 z-30 text-amber-800">出勤計</td>
+                    <td className={`border sticky left-0 bg-amber-50 z-30 text-amber-800 ${isMaximized ? 'p-0.5 text-[10px]' : 'p-2'}`}>出勤計</td>
                     {Array.from({ length: daysInMonth }, (_, i) => {
                       let count = 0;
                       activeNurses.forEach(nurse => {
@@ -3149,12 +3141,12 @@ const HcuScheduleSystem = () => {
                         if (shift && shift !== '休' && shift !== '有' && shift !== '明') count++;
                       });
                       return (
-                        <td key={i} className="border p-1 text-center text-amber-700">
+                        <td key={i} className={`border text-center text-amber-700 ${isMaximized ? 'p-0 text-[10px]' : 'p-1'}`}>
                           {count}
                         </td>
                       );
                     })}
-                    <td colSpan={4} className="border p-1"></td>
+                    <td colSpan={4} className={`border ${isMaximized ? 'p-0' : 'p-1'}`}></td>
                   </tr>
                 </tfoot>
               </table>
