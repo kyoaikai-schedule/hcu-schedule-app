@@ -178,6 +178,10 @@ const HcuScheduleSystem = () => {
   const [isMaximized, setIsMaximized] = useState(false); // 勤務表最大化
   const [showDeadlineSettings, setShowDeadlineSettings] = useState(false); // 締め切り設定モーダル
   const [showPasswordChange, setShowPasswordChange] = useState(false); // パスワード変更モーダル
+  const [storedAdminPassword, setStoredAdminPassword] = useState('admin123'); // DB保存パスワード
+  const [newPasswordInput, setNewPasswordInput] = useState('');
+  const [newPasswordConfirm, setNewPasswordConfirm] = useState('');
+  const [passwordChangeError, setPasswordChangeError] = useState('');
   
   // 提出期限設定
   const [requestDeadline, setRequestDeadline] = useState({ day: 14, hour: 11, minute: 59 });
@@ -266,24 +270,12 @@ const HcuScheduleSystem = () => {
               Object.entries(pmData).forEach(([nurseId, shifts]: [string, any]) => {
                 if (!shifts || shifts.length === 0) return;
                 const last = shifts[shifts.length - 1];
-                const sec = shifts.length > 1 ? shifts[shifts.length - 2] : '';
-                const third = shifts.length > 2 ? shifts[shifts.length - 3] : '';
                 reCalc[nurseId] = {};
                 if (last === '夜') {
                   reCalc[nurseId][1] = '明'; reCalc[nurseId][2] = '休';
-                  if (third === '夜' && sec === '明') reCalc[nurseId][3] = '休';
                 } else if (last === '明') {
                   reCalc[nurseId][1] = '休';
-                  if (sec === '夜' && shifts.length >= 4 && shifts[shifts.length - 4] === '夜' && shifts[shifts.length - 3] === '明') {
-                    reCalc[nurseId][2] = '休';
-                  }
                 }
-                let consec = 0;
-                for (let i = shifts.length - 1; i >= 0; i--) {
-                  const s = shifts[i];
-                  if (s && s !== '休' && s !== '有' && s !== '明') consec++; else break;
-                }
-                if (consec >= 4 && !reCalc[nurseId][1]) reCalc[nurseId][1] = '休';
               });
               setPrevMonthConstraints(reCalc);
             } else {
@@ -298,6 +290,12 @@ const HcuScheduleSystem = () => {
           try {
             setNurseShiftPrefs(JSON.parse(savedPrefs));
           } catch(e) { console.error('職員設定解析エラー:', e); }
+        }
+
+        // 管理者パスワードの読み込み
+        const savedPw = await fetchSettingFromDB('adminPassword');
+        if (savedPw) {
+          setStoredAdminPassword(savedPw);
         }
       } catch (error: any) {
         console.error('データ読み込みエラー:', error);
@@ -361,12 +359,34 @@ const HcuScheduleSystem = () => {
   // ============================================
 
   const handleAdminLogin = () => {
-    if (adminPassword === 'admin123') {
+    if (adminPassword === storedAdminPassword) {
       setIsAdminAuth(true);
       setAdminError('');
       setSystemMode('dashboard');
     } else {
       setAdminError('パスワードが正しくありません');
+    }
+  };
+
+  const handlePasswordChange = async () => {
+    setPasswordChangeError('');
+    if (!newPasswordInput || newPasswordInput.length < 4) {
+      setPasswordChangeError('パスワードは4文字以上にしてください');
+      return;
+    }
+    if (newPasswordInput !== newPasswordConfirm) {
+      setPasswordChangeError('パスワードが一致しません');
+      return;
+    }
+    try {
+      await saveSettingToDB('adminPassword', newPasswordInput);
+      setStoredAdminPassword(newPasswordInput);
+      setShowPasswordChange(false);
+      setNewPasswordInput('');
+      setNewPasswordConfirm('');
+      alert('✅ パスワードを変更しました');
+    } catch (e) {
+      setPasswordChangeError('保存に失敗しました');
     }
   };
 
@@ -465,9 +485,16 @@ const HcuScheduleSystem = () => {
     setExcelPreview(preview);
   };
 
+  const [excelImportConfirmed, setExcelImportConfirmed] = useState(false); // 確定済みフラグ
+
   const applyExcelImport = () => {
     if (excelPreview.length === 0) {
       alert('読み込むデータがありません');
+      return;
+    }
+
+    // 確認ダイアログ
+    if (!window.confirm(`⚠️ ${excelPreview.length}名の職員情報で現在のリストを上書きします。\nこの操作は取り消せません。\n\n本当に実行しますか？`)) {
       return;
     }
 
@@ -497,10 +524,14 @@ const HcuScheduleSystem = () => {
         }
       } catch (e) { console.error('DB保存エラー:', e); }
     })();
+    setExcelImportConfirmed(true);
+  };
+
+  const closeExcelImport = () => {
     setShowExcelImport(false);
     setExcelData(null);
     setExcelPreview([]);
-    alert(`✅ ${newNurses.length}名の職員情報を読み込みました`);
+    setExcelImportConfirmed(false);
   };
 
   // ============================================
@@ -720,7 +751,7 @@ const HcuScheduleSystem = () => {
     return result;
   };
 
-  // 確定済みデータから制約を計算
+  // 確定済みデータから制約を計算（最大2日目まで）
   const calculateConstraintsFromData = (confirmedData) => {
     const constraints = {};
     
@@ -729,8 +760,6 @@ const HcuScheduleSystem = () => {
       if (!shifts || shifts.length === 0) return;
       
       const lastShift = shifts[shifts.length - 1];
-      const secondLastShift = shifts.length > 1 ? shifts[shifts.length - 2] : '';
-      const thirdLastShift = shifts.length > 2 ? shifts[shifts.length - 3] : '';
       
       constraints[nurse.id] = {};
       
@@ -738,36 +767,12 @@ const HcuScheduleSystem = () => {
       if (lastShift === '夜') {
         constraints[nurse.id][1] = '明';  // 1日目
         constraints[nurse.id][2] = '休';  // 2日目
-        if (thirdLastShift === '夜' && secondLastShift === '明') {
-          constraints[nurse.id][3] = '休';  // 3日目
-        }
       }
       // 前月末が「夜勤明け」の場合 → 1日目=休
       else if (lastShift === '明') {
         constraints[nurse.id][1] = '休';  // 1日目
-        if (secondLastShift === '夜') {
-          if (shifts.length >= 4 && shifts[shifts.length - 4] === '夜' && shifts[shifts.length - 3] === '明') {
-            constraints[nurse.id][2] = '休';  // 2日目
-          }
-        }
       }
-      // 前月末が「休」の場合 → 制約なし（1日目は自由）
-      // 前月末が「日勤」等で連続勤務が4日以上の場合 → 1日目=休
-      
-      // 連続勤務日数をチェック
-      let consecutiveWork = 0;
-      for (let i = shifts.length - 1; i >= 0; i--) {
-        const s = shifts[i];
-        if (s && s !== '休' && s !== '有' && s !== '明') {
-          consecutiveWork++;
-        } else {
-          break;
-        }
-      }
-      
-      if (consecutiveWork >= 4 && !constraints[nurse.id][1]) {
-        constraints[nurse.id][1] = '休';  // 1日目
-      }
+      // それ以外 → 制約なし
     });
     
     return constraints;
@@ -867,7 +872,7 @@ const HcuScheduleSystem = () => {
         minDaysOff: generateConfig.minDaysOff,
         maxConsecutiveNights: 2,
         maxConsecutiveDays: generateConfig.maxConsecutiveDays,
-        beds: 8,
+        beds: 16,
         ratio: 4,
         weeklyNightStaff: weeklyNightStaff
       };
@@ -1145,70 +1150,88 @@ const HcuScheduleSystem = () => {
           });
         }
 
+        // ★★★ フェーズ1: 日勤不足日を優先的に埋める（日別ループ）★★★
+        for (let day = 0; day < daysInMonth; day++) {
+          const dayReq = getDayStaffRequirement(day);
+          if (dailyDayCount[day] >= dayReq) continue;
+          
+          const needed = dayReq - dailyDayCount[day];
+          const candidates = activeNurses
+            .filter(nurse => {
+              if (newSchedule[nurse.id][day]) return false;
+              if (nurseShiftPrefs[nurse.id]?.noDayShift) return false;
+              if (isSunday(day) && nurse.position === '師長') return false;
+              // 連続勤務チェック
+              let consec = 0;
+              for (let d = day - 1; d >= 0; d--) {
+                const s = newSchedule[nurse.id][d];
+                if (s && s !== '休' && s !== '有' && s !== '明') consec++; else break;
+              }
+              if (consec >= config.maxConsecutiveDays) return false;
+              return true;
+            })
+            .sort((a, b) => stats[a.id].totalWork - stats[b.id].totalWork);
+          
+          candidates.slice(0, needed).forEach(nurse => {
+            newSchedule[nurse.id][day] = '日';
+            stats[nurse.id].totalWork++;
+            stats[nurse.id].dayWorkCount++;
+            dailyDayCount[day]++;
+            if (isWeekendOrHoliday(day)) stats[nurse.id].weekendWork++;
+          });
+        }
+
+        // ★★★ フェーズ2: 残りの空きセルを埋める ★★★
         activeNurses.forEach(nurse => {
           let consecutiveWork = 0;
+          // 連続勤務の初期値を計算
+          for (let d = 0; d < daysInMonth; d++) {
+            const s = newSchedule[nurse.id][d];
+            if (s && s !== '休' && s !== '有' && s !== '明') {
+              consecutiveWork++;
+            } else if (s) {
+              consecutiveWork = 0;
+            }
+          }
+          // リセットしてもう一度走査
+          consecutiveWork = 0;
           const nursePref = nurseShiftPrefs[nurse.id];
           const canDoDay = !nursePref?.noDayShift;
           for (let day = 0; day < daysInMonth; day++) {
             if (!newSchedule[nurse.id][day]) {
-              const needsWork = stats[nurse.id].totalWork < targetWorkDays - 2;
-              const needsRest = stats[nurse.id].daysOff < targetDaysOff - 2;
+              const needsWork = stats[nurse.id].totalWork < targetWorkDays;
               const tooManyConsecutive = consecutiveWork >= config.maxConsecutiveDays;
               const shouldRest = consecutiveWork >= 4;
               const sundayFlag = isSunday(day);
               const canWorkDay = !(sundayFlag && nurse.position === '師長') && canDoDay;
               
-              // この日の日勤者数要件
               const dayReq = getDayStaffRequirement(day);
-              const dayAlreadyFull = dailyDayCount[day] >= dayReq;
+              const dayShort = dailyDayCount[day] < dayReq;
               
-              if (tooManyConsecutive || shouldRest || (!needsWork && consecutiveWork >= 3)) {
+              if (tooManyConsecutive || shouldRest) {
                 newSchedule[nurse.id][day] = '休';
                 stats[nurse.id].daysOff++;
                 consecutiveWork = 0;
-              } else if (needsWork && canWorkDay && !dayAlreadyFull) {
-                // 日勤者数が足りない日に優先配置
+              } else if (needsWork && canWorkDay && dayShort) {
+                // 日勤不足の日は最優先で配置
                 newSchedule[nurse.id][day] = '日';
                 stats[nurse.id].totalWork++;
                 stats[nurse.id].dayWorkCount++;
                 dailyDayCount[day]++;
                 consecutiveWork++;
                 if (isWeekendOrHoliday(day)) stats[nurse.id].weekendWork++;
-              } else if (needsWork && canWorkDay && dayAlreadyFull) {
-                // 日勤者数は足りている → 勤務日数が不足なら配置、十分なら休み
-                if (stats[nurse.id].totalWork < targetWorkDays - 4) {
-                  newSchedule[nurse.id][day] = '日';
-                  stats[nurse.id].totalWork++;
-                  stats[nurse.id].dayWorkCount++;
-                  dailyDayCount[day]++;
-                  consecutiveWork++;
-                  if (isWeekendOrHoliday(day)) stats[nurse.id].weekendWork++;
-                } else {
-                  newSchedule[nurse.id][day] = '休';
-                  stats[nurse.id].daysOff++;
-                  consecutiveWork = 0;
-                }
-              } else if (needsRest || !canWorkDay) {
+              } else if (needsWork && canWorkDay) {
+                // 勤務日数が不足している場合は日勤配置
+                newSchedule[nurse.id][day] = '日';
+                stats[nurse.id].totalWork++;
+                stats[nurse.id].dayWorkCount++;
+                dailyDayCount[day]++;
+                consecutiveWork++;
+                if (isWeekendOrHoliday(day)) stats[nurse.id].weekendWork++;
+              } else {
                 newSchedule[nurse.id][day] = '休';
                 stats[nurse.id].daysOff++;
                 consecutiveWork = 0;
-              } else {
-                if (consecutiveWork >= 2 || Math.random() > 0.6) {
-                  newSchedule[nurse.id][day] = '休';
-                  stats[nurse.id].daysOff++;
-                  consecutiveWork = 0;
-                } else if (canWorkDay && !dayAlreadyFull) {
-                  newSchedule[nurse.id][day] = '日';
-                  stats[nurse.id].totalWork++;
-                  stats[nurse.id].dayWorkCount++;
-                  dailyDayCount[day]++;
-                  consecutiveWork++;
-                  if (isWeekendOrHoliday(day)) stats[nurse.id].weekendWork++;
-                } else {
-                  newSchedule[nurse.id][day] = '休';
-                  stats[nurse.id].daysOff++;
-                  consecutiveWork = 0;
-                }
               }
             } else {
               const shift = newSchedule[nurse.id][day];
@@ -1221,29 +1244,41 @@ const HcuScheduleSystem = () => {
           }
         });
 
-        // ★★★ 事後調整：日勤者数が不足している日を補充 ★★★
-        for (let day = 0; day < daysInMonth; day++) {
-          const dayReq = getDayStaffRequirement(day);
-          while (dailyDayCount[day] < dayReq) {
-            // 休みの職員から勤務日数が少ない人を選んで日勤に変更
-            const candidate = activeNurses
-              .filter(nurse => {
-                const s = newSchedule[nurse.id][day];
-                if (s !== '休') return false;
-                if (nurseShiftPrefs[nurse.id]?.noDayShift) return false;
-                // 前月制約・希望で設定された休みは変更しない
-                if (prevMonthConstraints[nurse.id]?.[day + 1]) return false;  // 制約は1ベース
-                const reqVal = existingRequests[nurse.id]?.[day];
-                if (reqVal === '休' || reqVal === '有') return false;
-                return true;
-              })
-              .sort((a, b) => stats[a.id].totalWork - stats[b.id].totalWork)[0];
-            if (!candidate) break;
-            newSchedule[candidate.id][day] = '日';
-            stats[candidate.id].totalWork++;
-            stats[candidate.id].dayWorkCount++;
-            stats[candidate.id].daysOff--;
-            dailyDayCount[day]++;
+        // ★★★ フェーズ3 事後調整：日勤者数が不足している日を補充 ★★★
+        for (let pass = 0; pass < 3; pass++) {
+          for (let day = 0; day < daysInMonth; day++) {
+            const dayReq = getDayStaffRequirement(day);
+            while (dailyDayCount[day] < dayReq) {
+              const candidate = activeNurses
+                .filter(nurse => {
+                  const s = newSchedule[nurse.id][day];
+                  if (s !== '休') return false;
+                  if (nurseShiftPrefs[nurse.id]?.noDayShift) return false;
+                  // 前月制約・希望で設定された休みは変更しない
+                  if (prevMonthConstraints[nurse.id]?.[day + 1]) return false;
+                  const reqVal = existingRequests[nurse.id]?.[day];
+                  if (reqVal === '休' || reqVal === '有') return false;
+                  // 連続勤務チェック
+                  let consec = 0;
+                  for (let d = day - 1; d >= 0; d--) {
+                    const s2 = newSchedule[nurse.id][d];
+                    if (s2 && s2 !== '休' && s2 !== '有' && s2 !== '明') consec++; else break;
+                  }
+                  for (let d = day + 1; d < daysInMonth; d++) {
+                    const s2 = newSchedule[nurse.id][d];
+                    if (s2 && s2 !== '休' && s2 !== '有' && s2 !== '明') consec++; else break;
+                  }
+                  if (consec >= config.maxConsecutiveDays - 1) return false;
+                  return true;
+                })
+                .sort((a, b) => stats[a.id].totalWork - stats[b.id].totalWork)[0];
+              if (!candidate) break;
+              newSchedule[candidate.id][day] = '日';
+              stats[candidate.id].totalWork++;
+              stats[candidate.id].dayWorkCount++;
+              stats[candidate.id].daysOff--;
+              dailyDayCount[day]++;
+            }
           }
         }
 
@@ -1332,7 +1367,7 @@ const HcuScheduleSystem = () => {
           const diff = Math.abs(dayStaffCount - required);
           if (diff > 0) {
             // 不足は重く、過剰はやや軽く
-            score -= dayStaffCount < required ? diff * diff * 20 : diff * diff * 10;
+            score -= dayStaffCount < required ? diff * diff * 80 : diff * diff * 15;
           }
 
           // ★★★ 日別夜勤人数ペナルティ（最重要）★★★
@@ -1351,7 +1386,7 @@ const HcuScheduleSystem = () => {
 
       // 複数の候補を生成して最良を選択
       const candidates = [];
-      for (let i = 0; i < 15; i++) {
+      for (let i = 0; i < 30; i++) {
         const candidate = generateCandidate(i * 12345 + Date.now());
         const score = calculateScore(candidate.schedule, candidate.stats);
         candidates.push({ ...candidate, score });
@@ -1665,7 +1700,8 @@ const HcuScheduleSystem = () => {
           </div>
 
           <div className="mt-6 text-xs text-gray-500 bg-gray-50 p-4 rounded-xl">
-            <p>デモ用パスワード: <code className="bg-gray-200 px-2 py-0.5 rounded">admin123</code></p>
+            <p>初期パスワード: <code className="bg-gray-200 px-2 py-0.5 rounded">admin123</code></p>
+            <p className="mt-1">※ ダッシュボードから変更できます</p>
           </div>
         </div>
       </div>
@@ -1714,6 +1750,9 @@ const HcuScheduleSystem = () => {
                 </button>
                 <button onClick={() => setShowDeadlineSettings(true)} className="px-3 py-2 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg text-sm flex items-center gap-1">
                   <Clock size={16} /> 締め切り設定
+                </button>
+                <button onClick={() => { setShowPasswordChange(true); setNewPasswordInput(''); setNewPasswordConfirm(''); setPasswordChangeError(''); }} className="px-3 py-2 bg-amber-50 hover:bg-amber-100 text-amber-700 rounded-lg text-sm flex items-center gap-1">
+                  <Lock size={16} /> パスワード変更
                 </button>
                 <button onClick={handleAdminLogout} className="px-3 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-sm flex items-center gap-1">
                   <LogOut size={16} /> ログアウト
@@ -1921,6 +1960,50 @@ const HcuScheduleSystem = () => {
                 <button onClick={() => setShowDeadlineSettings(false)}
                   className="w-full px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">
                   設定を保存
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* パスワード変更モーダル */}
+        {showPasswordChange && (
+          <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl p-6 w-full max-w-md">
+              <div className="flex justify-between items-center mb-6">
+                <h3 className="text-xl font-bold">🔑 管理者パスワード変更</h3>
+                <button onClick={() => setShowPasswordChange(false)} className="p-2 hover:bg-gray-100 rounded-full">
+                  <X size={24} />
+                </button>
+              </div>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">新しいパスワード</label>
+                  <input
+                    type="password"
+                    value={newPasswordInput}
+                    onChange={(e) => setNewPasswordInput(e.target.value)}
+                    className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:border-amber-500 focus:outline-none"
+                    placeholder="4文字以上"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">新しいパスワード（確認）</label>
+                  <input
+                    type="password"
+                    value={newPasswordConfirm}
+                    onChange={(e) => setNewPasswordConfirm(e.target.value)}
+                    onKeyPress={(e) => e.key === 'Enter' && handlePasswordChange()}
+                    className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:border-amber-500 focus:outline-none"
+                    placeholder="もう一度入力"
+                  />
+                </div>
+                {passwordChangeError && (
+                  <div className="text-sm text-red-600 bg-red-50 p-3 rounded-lg">{passwordChangeError}</div>
+                )}
+                <button onClick={handlePasswordChange}
+                  className="w-full px-4 py-3 bg-amber-500 hover:bg-amber-600 text-white rounded-xl font-semibold transition-colors">
+                  パスワードを変更
                 </button>
               </div>
             </div>
@@ -2599,7 +2682,7 @@ const HcuScheduleSystem = () => {
           const handleCellClick = (nurseId: any, dayIndex: number, currentShift: string | null) => {
             const CYCLE = ['日', '夜', '休', '有', null];
             const currentIdx = currentShift ? CYCLE.indexOf(currentShift) : -1;
-            const nextIdx = currentIdx >= 0 ? (currentIdx + 1) % CYCLE.length : 0;
+            const nextIdx = (currentShift === '明') ? CYCLE.indexOf('休') : (currentIdx >= 0 ? (currentIdx + 1) % CYCLE.length : 0);
             const newShift = CYCLE[nextIdx];
             const prevShift = currentShift;
 
@@ -2607,31 +2690,39 @@ const HcuScheduleSystem = () => {
               const newData = JSON.parse(JSON.stringify(data));
               if (!newData[nurseId]) newData[nurseId] = new Array(daysInMonth).fill(null);
               
-              // 以前「夜」だった場合 → 翌日の「明」と翌々日の「休」を元に戻す
+              // 以前「夜」だった場合 → 翌日の「明」と翌々日の「休」をバックアップから復元
               if (prevShift === '夜') {
                 if (dayIndex + 1 < daysInMonth && newData[nurseId][dayIndex + 1] === '明') {
-                  const mk = `${targetYear}-${targetMonth}`;
-                  const nurseIdKey = String(nurseId);
-                  const origNext = requests[mk]?.[nurseIdKey]?.[dayIndex + 2];
-                  newData[nurseId][dayIndex + 1] = origNext || null;
+                  const bk1 = `sched-${nurseId}-${dayIndex + 1}`;
+                  const origVal1 = autoAkeBackup[bk1] ?? null;
+                  newData[nurseId][dayIndex + 1] = origVal1;
+                  updateScheduleCellInDB(nurseId, targetYear, targetMonth, dayIndex + 2, origVal1);
+                  setAutoAkeBackup(prev => { const n = {...prev}; delete n[bk1]; return n; });
                 }
                 if (dayIndex + 2 < daysInMonth && newData[nurseId][dayIndex + 2] === '休') {
-                  const mk = `${targetYear}-${targetMonth}`;
-                  const nurseIdKey = String(nurseId);
-                  const origNext2 = requests[mk]?.[nurseIdKey]?.[dayIndex + 3];
-                  newData[nurseId][dayIndex + 2] = origNext2 || null;
+                  const bk2 = `sched-${nurseId}-${dayIndex + 2}`;
+                  const origVal2 = autoAkeBackup[bk2] ?? null;
+                  newData[nurseId][dayIndex + 2] = origVal2;
+                  updateScheduleCellInDB(nurseId, targetYear, targetMonth, dayIndex + 3, origVal2);
+                  setAutoAkeBackup(prev => { const n = {...prev}; delete n[bk2]; return n; });
                 }
               }
               
               newData[nurseId][dayIndex] = newShift;
               
-              // 「夜」を選択した場合 → 翌日を「明」、翌々日を「休」
+              // 「夜」を選択した場合 → 翌日・翌々日をバックアップして上書き
               if (newShift === '夜') {
                 if (dayIndex + 1 < daysInMonth) {
+                  const bk1 = `sched-${nurseId}-${dayIndex + 1}`;
+                  setAutoAkeBackup(prev => ({...prev, [bk1]: newData[nurseId][dayIndex + 1]}));
                   newData[nurseId][dayIndex + 1] = '明';
+                  updateScheduleCellInDB(nurseId, targetYear, targetMonth, dayIndex + 2, '明');
                 }
-                if (dayIndex + 2 < daysInMonth && !newData[nurseId][dayIndex + 2]) {
+                if (dayIndex + 2 < daysInMonth) {
+                  const bk2 = `sched-${nurseId}-${dayIndex + 2}`;
+                  setAutoAkeBackup(prev => ({...prev, [bk2]: newData[nurseId][dayIndex + 2]}));
                   newData[nurseId][dayIndex + 2] = '休';
+                  updateScheduleCellInDB(nurseId, targetYear, targetMonth, dayIndex + 3, '休');
                 }
               }
               
@@ -2652,6 +2743,7 @@ const HcuScheduleSystem = () => {
               const newData = updateData(baseData);
               setSchedule({ month: `${targetYear}-${targetMonth}`, data: newData });
             }
+            updateScheduleCellInDB(nurseId, targetYear, targetMonth, dayIndex + 1, newShift);
           };
 
           return (
@@ -3474,19 +3566,51 @@ const HcuScheduleSystem = () => {
             <div className="min-h-full flex items-center justify-center p-4">
               <div className="bg-white rounded-2xl p-6 w-full max-w-4xl my-4">
               <div className="flex justify-between items-center mb-4">
-                <h3 className="text-xl font-bold">Excelから職員情報を読み込み</h3>
-                <button
-                  onClick={() => {
-                    setShowExcelImport(false);
-                    setExcelData(null);
-                    setExcelPreview([]);
-                  }}
-                  className="p-2 hover:bg-gray-100 rounded-full transition-colors"
-                >
+                <h3 className="text-xl font-bold">
+                  {excelImportConfirmed ? '✅ 職員情報 読み込み完了' : 'Excelから職員情報を読み込み'}
+                </h3>
+                <button onClick={closeExcelImport} className="p-2 hover:bg-gray-100 rounded-full transition-colors">
                   <X size={24} />
                 </button>
               </div>
 
+              {excelImportConfirmed ? (
+                <>
+                  <div className="bg-green-50 border border-green-200 rounded-xl p-4 mb-4">
+                    <p className="text-green-800 font-bold text-lg mb-1">✅ {activeNurses.length}名の職員情報を読み込みました</p>
+                    <p className="text-sm text-green-700">職員一覧が更新されました。以下が登録済みの職員です。</p>
+                  </div>
+                  <div className="border rounded-lg max-h-64 overflow-y-auto mb-6">
+                    <table className="w-full">
+                      <thead className="bg-gray-50 sticky top-0">
+                        <tr>
+                          <th className="px-4 py-2 text-left text-sm">No.</th>
+                          <th className="px-4 py-2 text-left text-sm">氏名</th>
+                          <th className="px-4 py-2 text-left text-sm">役職</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {activeNurses.map((nurse, idx) => (
+                          <tr key={nurse.id} className="border-t">
+                            <td className="px-4 py-2 text-sm">{idx + 1}</td>
+                            <td className="px-4 py-2 text-sm font-medium">{nurse.name}</td>
+                            <td className="px-4 py-2 text-sm">
+                              <span className={`text-xs px-2 py-1 rounded ${POSITIONS[nurse.position]?.color}`}>{nurse.position}</span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="flex justify-end">
+                    <button onClick={closeExcelImport}
+                      className="px-6 py-3 bg-teal-600 hover:bg-teal-700 text-white rounded-xl font-semibold transition-colors">
+                      閉じる
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6 p-4 bg-gray-50 rounded-xl">
                 <div>
                   <label className="block text-sm font-medium mb-1">開始行</label>
@@ -3554,24 +3678,35 @@ const HcuScheduleSystem = () => {
                       <tr>
                         <th className="px-4 py-2 text-left text-sm">行</th>
                         <th className="px-4 py-2 text-left text-sm">氏名</th>
-                        <th className="px-4 py-2 text-left text-sm">役職</th>
+                        <th className="px-4 py-2 text-left text-sm">役職（読取値）</th>
+                        <th className="px-4 py-2 text-left text-sm">判定役職</th>
                       </tr>
                     </thead>
                     <tbody>
                       {excelPreview.length === 0 ? (
                         <tr>
-                          <td colSpan={3} className="px-4 py-8 text-center text-gray-500">
+                          <td colSpan={4} className="px-4 py-8 text-center text-gray-500">
                             データが見つかりません
                           </td>
                         </tr>
                       ) : (
-                        excelPreview.map((item, index) => (
-                          <tr key={index} className="border-t">
-                            <td className="px-4 py-2 text-sm">{item.row}</td>
-                            <td className="px-4 py-2 text-sm font-medium">{item.name}</td>
-                            <td className="px-4 py-2 text-sm">{item.position}</td>
-                          </tr>
-                        ))
+                        excelPreview.map((item, index) => {
+                          const posStr = (item.position || '').replace(/\s+/g, '');
+                          let judgedPos = '一般';
+                          if (posStr.includes('師長')) judgedPos = '師長';
+                          else if (posStr.includes('主任') && !posStr.includes('副')) judgedPos = '主任';
+                          else if (posStr.includes('副主任') || (posStr.includes('副') && posStr.includes('主任'))) judgedPos = '副主任';
+                          return (
+                            <tr key={index} className="border-t">
+                              <td className="px-4 py-2 text-sm">{item.row}</td>
+                              <td className="px-4 py-2 text-sm font-medium">{item.name}</td>
+                              <td className="px-4 py-2 text-sm text-gray-500">{item.position || '-'}</td>
+                              <td className="px-4 py-2 text-sm">
+                                <span className={`text-xs px-2 py-1 rounded ${POSITIONS[judgedPos]?.color}`}>{judgedPos}</span>
+                              </td>
+                            </tr>
+                          );
+                        })
                       )}
                     </tbody>
                   </table>
@@ -3580,19 +3715,13 @@ const HcuScheduleSystem = () => {
 
               <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-6">
                 <p className="text-sm text-amber-800">
-                  <strong>注意：</strong>「反映」をクリックすると、現在の職員リストが上書きされます。
+                  <strong>⚠️ 注意：</strong>「反映」をクリックすると、現在の職員リストが<strong>全て上書き</strong>されます。確認ダイアログが表示されます。
                 </p>
               </div>
 
               <div className="flex justify-end gap-3">
-                <button
-                  onClick={() => {
-                    setShowExcelImport(false);
-                    setExcelData(null);
-                    setExcelPreview([]);
-                  }}
-                  className="px-6 py-2 bg-gray-200 hover:bg-gray-300 rounded-xl transition-colors"
-                >
+                <button onClick={closeExcelImport}
+                  className="px-6 py-2 bg-gray-200 hover:bg-gray-300 rounded-xl transition-colors">
                   キャンセル
                 </button>
                 <button
@@ -3603,6 +3732,8 @@ const HcuScheduleSystem = () => {
                   反映
                 </button>
               </div>
+                </>
+              )}
             </div>
           </div>
           </div>
