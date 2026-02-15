@@ -16,8 +16,6 @@ const POSITIONS = {
 
 const SHIFT_TYPES = {
   日: { name: '日勤', hours: 7.5, color: 'bg-blue-100 text-blue-700' },
-  早: { name: '早出', hours: 7.5, color: 'bg-sky-100 text-sky-700' },
-  遅: { name: '遅出', hours: 7.5, color: 'bg-indigo-100 text-indigo-700' },
   夜: { name: '夜勤', hours: 14.5, color: 'bg-purple-100 text-purple-700' },
   明: { name: '夜明', hours: 0, color: 'bg-pink-100 text-pink-700' },
   休: { name: '公休', hours: 0, color: 'bg-gray-100 text-gray-600' },
@@ -26,42 +24,42 @@ const SHIFT_TYPES = {
 
 // Supabase DB操作関数
 const fetchNursesFromDB = async () => {
-  const { data, error } = await supabase.from('nurses').select('*').order('id');
+  const { data, error } = await supabase.from('hcu_nurses').select('*').order('id');
   if (error) throw error;
   return data || [];
 };
 const upsertNurseToDB = async (nurse: any) => {
-  const { error } = await supabase.from('nurses').upsert(nurse, { onConflict: 'id' });
+  const { error } = await supabase.from('hcu_nurses').upsert(nurse, { onConflict: 'id' });
   if (error) throw error;
 };
 const deleteNurseFromDB = async (id: number) => {
-  const { error } = await supabase.from('nurses').delete().eq('id', id);
+  const { error } = await supabase.from('hcu_nurses').delete().eq('id', id);
   if (error) throw error;
 };
 const fetchRequestsFromDB = async (year: number, month: number) => {
-  const { data, error } = await supabase.from('requests').select('*').eq('year', year).eq('month', month);
+  const { data, error } = await supabase.from('hcu_requests').select('*').eq('year', year).eq('month', month);
   if (error) throw error;
   return data || [];
 };
 const upsertRequestToDB = async (nurseId: number, year: number, month: number, day: number, shiftType: string) => {
-  const { error } = await supabase.from('requests').upsert(
+  const { error } = await supabase.from('hcu_requests').upsert(
     { nurse_id: nurseId, year, month, day, shift_type: shiftType },
     { onConflict: 'nurse_id,year,month,day' }
   );
   if (error) throw error;
 };
 const deleteRequestFromDB = async (nurseId: number, year: number, month: number, day: number) => {
-  const { error } = await supabase.from('requests').delete()
+  const { error } = await supabase.from('hcu_requests').delete()
     .eq('nurse_id', nurseId).eq('year', year).eq('month', month).eq('day', day);
   if (error) throw error;
 };
 const fetchSchedulesFromDB = async (year: number, month: number) => {
-  const { data, error } = await supabase.from('schedules').select('*').eq('year', year).eq('month', month);
+  const { data, error } = await supabase.from('hcu_schedules').select('*').eq('year', year).eq('month', month);
   if (error) throw error;
   return data || [];
 };
 const saveSchedulesToDB = async (year: number, month: number, scheduleData: Record<number, (string | null)[]>) => {
-  await supabase.from('schedules').delete().eq('year', year).eq('month', month);
+  await supabase.from('hcu_schedules').delete().eq('year', year).eq('month', month);
   const rows: any[] = [];
   Object.entries(scheduleData).forEach(([nurseId, shifts]) => {
     (shifts as (string | null)[]).forEach((shift, dayIndex) => {
@@ -69,28 +67,28 @@ const saveSchedulesToDB = async (year: number, month: number, scheduleData: Reco
     });
   });
   if (rows.length > 0) {
-    const { error } = await supabase.from('schedules').insert(rows);
+    const { error } = await supabase.from('hcu_schedules').insert(rows);
     if (error) throw error;
   }
 };
 const updateScheduleCellInDB = async (nurseId: number, year: number, month: number, day: number, shift: string | null) => {
   if (shift) {
-    await supabase.from('schedules').upsert(
+    await supabase.from('hcu_schedules').upsert(
       { nurse_id: nurseId, year, month, day, shift },
       { onConflict: 'nurse_id,year,month,day' }
     );
   } else {
-    await supabase.from('schedules').delete()
+    await supabase.from('hcu_schedules').delete()
       .eq('nurse_id', nurseId).eq('year', year).eq('month', month).eq('day', day);
   }
 };
 const fetchSettingFromDB = async (key: string) => {
-  const { data, error } = await supabase.from('settings').select('value').eq('key', key).single();
+  const { data, error } = await supabase.from('hcu_settings').select('value').eq('key', key).single();
   if (error && error.code !== 'PGRST116') throw error;
   return data?.value || null;
 };
 const saveSettingToDB = async (key: string, value: string) => {
-  await supabase.from('settings').upsert(
+  await supabase.from('hcu_settings').upsert(
     { key, value, updated_at: new Date().toISOString() },
     { onConflict: 'key' }
   );
@@ -103,7 +101,7 @@ const saveSettingToDB = async (key: string, value: string) => {
 // 固定アクセスコード生成（ID + 名前から常に同じコードを生成）
 const generateFixedAccessCode = (id, name) => {
   let hash = 0;
-  const str = `${id}-${name}-nurse2025`;
+  const str = `${id}-${name}-hcu2025`;
   for (let i = 0; i < str.length; i++) {
     const char = str.charCodeAt(i);
     hash = ((hash << 5) - hash) + char;
@@ -129,7 +127,7 @@ const isWeekend = (year, month, day) => {
 // メインコンポーネント
 // ============================================
 
-const NurseScheduleSystem = () => {
+const HcuScheduleSystem = () => {
   // システムモード: 'select' | 'admin' | 'dashboard' | 'adminSchedule' | 'staff'
   const [systemMode, setSystemMode] = useState('select');
   
@@ -186,16 +184,16 @@ const NurseScheduleSystem = () => {
   
   // 勤務表生成設定
   const [generateConfig, setGenerateConfig] = useState({
-    nightShiftPattern: [3, 4], // 週ごとの夜勤人数パターン（交互）
-    startWithThree: true, // 第1週を3人から開始
+    nightShiftPattern: [2, 3], // 週ごとの夜勤人数パターン（交互）
+    startWithThree: false, // 第1週を2人から開始
     maxNightShifts: 6, // 個人の最大夜勤回数
     minDaysOff: 8, // 最小休日数
     maxConsecutiveDays: 5, // 最大連続勤務日数
     // 日勤者数設定
-    weekdayDayStaff: 10, // 平日の日勤者数
-    weekendDayStaff: 8, // 土日の日勤者数
-    yearEndDayStaff: 7, // 年末（12/30-31）の日勤者数
-    newYearDayStaff: 7  // 年始（1/1-3）の日勤者数
+    weekdayDayStaff: 7, // 平日の日勤者数
+    weekendDayStaff: 5, // 土日の日勤者数
+    yearEndDayStaff: 4, // 年末（12/30-31）の日勤者数
+    newYearDayStaff: 4  // 年始（1/1-3）の日勤者数
   });
   
   // 前月データ関連（確定済み）
@@ -404,7 +402,7 @@ const NurseScheduleSystem = () => {
 
   const deleteNurse = (id: any) => {
     if (activeNurses.length <= 1) {
-      alert('最低1名の看護師が必要です');
+      alert('最低1名の職員が必要です');
       return;
     }
     setNurses(nurses.filter((n: any) => n.id !== id));
@@ -493,16 +491,16 @@ const NurseScheduleSystem = () => {
     // DB一括保存
     (async () => {
       try {
-        await supabase.from('nurses').delete().neq('id', 0);
+        await supabase.from('hcu_nurses').delete().neq('id', 0);
         if (newNurses.length > 0) {
-          await supabase.from('nurses').insert(newNurses);
+          await supabase.from('hcu_nurses').insert(newNurses);
         }
       } catch (e) { console.error('DB保存エラー:', e); }
     })();
     setShowExcelImport(false);
     setExcelData(null);
     setExcelPreview([]);
-    alert(`✅ ${newNurses.length}名の看護師情報を読み込みました`);
+    alert(`✅ ${newNurses.length}名の職員情報を読み込みました`);
   };
 
   // ============================================
@@ -634,7 +632,7 @@ const NurseScheduleSystem = () => {
     setSchedule(null);
     (async () => {
       try {
-        await supabase.from('schedules').delete()
+        await supabase.from('hcu_schedules').delete()
           .eq('year', targetYear).eq('month', targetMonth);
         console.log('前月データ反映のため勤務表を消去しました');
       } catch (e) { console.error('勤務表消去エラー:', e); }
@@ -790,8 +788,6 @@ const NurseScheduleSystem = () => {
     if (s === '明' || s === '夜明' || s === '夜勤明' || s === 'A') return '明';
     if (s === '休' || s === '公休' || s === '公' || s === 'O') return '休';
     if (s === '有' || s === '有休' || s === '有給' || s === 'Y') return '有';
-    if (s === '早' || s === '早出') return '早';
-    if (s === '遅' || s === '遅出') return '遅';
     // nanや空白も休み扱い
     if (s === 'nan' || s === 'NaN') return '休';
     return s;
@@ -871,8 +867,8 @@ const NurseScheduleSystem = () => {
         minDaysOff: generateConfig.minDaysOff,
         maxConsecutiveNights: 2,
         maxConsecutiveDays: generateConfig.maxConsecutiveDays,
-        beds: 35,
-        ratio: 7,
+        beds: 8,
+        ratio: 4,
         weeklyNightStaff: weeklyNightStaff
       };
 
@@ -1112,7 +1108,7 @@ const NurseScheduleSystem = () => {
             const headShift = newSchedule[headNurse.id][day];
             if (headShift === '休' || headShift === '有') {
               const managementWorking = managementNurses.some(n => 
-                newSchedule[n.id][day] === '日' || newSchedule[n.id][day] === '早' || newSchedule[n.id][day] === '遅'
+                newSchedule[n.id][day] === '日'
               );
               if (!managementWorking) {
                 const availableManagement = managementNurses.find(n => 
@@ -1145,7 +1141,7 @@ const NurseScheduleSystem = () => {
         for (let day = 0; day < daysInMonth; day++) {
           activeNurses.forEach(nurse => {
             const s = newSchedule[nurse.id][day];
-            if (s === '日' || s === '早' || s === '遅') dailyDayCount[day]++;
+            if (s === '日') dailyDayCount[day]++;
           });
         }
 
@@ -1315,7 +1311,7 @@ const NurseScheduleSystem = () => {
             }
             // 日勤なし設定の違反
             if (nursePref.noDayShift) {
-              const dayShiftCount = shifts.filter((s: any) => s === '日' || s === '早' || s === '遅').length;
+              const dayShiftCount = shifts.filter((s: any) => s === '日').length;
               if (dayShiftCount > 0) {
                 score -= dayShiftCount * 200;
               }
@@ -1329,7 +1325,7 @@ const NurseScheduleSystem = () => {
           let nightStaffCount = 0;
           activeNurses.forEach(nurse => {
             const s = schedule[nurse.id][day];
-            if (s === '日' || s === '早' || s === '遅') dayStaffCount++;
+            if (s === '日') dayStaffCount++;
             if (s === '夜') nightStaffCount++;
           });
           const required = getDayStaffRequirement(day);
@@ -1472,7 +1468,7 @@ const NurseScheduleSystem = () => {
 
     const wb = XLSX.utils.book_new();
     const scheduleData = [
-      [`${targetYear}年${targetMonth + 1}月 勤務表`],
+      [`HCU ${targetYear}年${targetMonth + 1}月 勤務表`],
       ['氏名', '役職', ...Array.from({ length: daysInMonth }, (_, i) => `${i + 1}`)]
     ];
 
@@ -1577,20 +1573,20 @@ const NurseScheduleSystem = () => {
   // システム選択画面
   if (systemMode === 'select') {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-100 flex items-center justify-center p-6">
+      <div className="min-h-screen bg-gradient-to-br from-slate-50 via-teal-50 to-cyan-100 flex items-center justify-center p-6">
         <div className="bg-white/80 backdrop-blur-sm rounded-3xl shadow-2xl p-10 w-full max-w-lg border border-white/50">
           <div className="text-center mb-10">
-            <div className="bg-gradient-to-br from-indigo-500 to-purple-600 p-5 rounded-2xl inline-block mb-5 shadow-lg">
+            <div className="bg-gradient-to-br from-teal-500 to-cyan-600 p-5 rounded-2xl inline-block mb-5 shadow-lg">
               <Calendar className="text-white" size={56} />
             </div>
-            <h1 className="text-3xl font-bold text-gray-800 mb-2">看護師勤務表システム</h1>
+            <h1 className="text-3xl font-bold text-gray-800 mb-2">HCU勤務表システム</h1>
             <p className="text-lg font-bold text-indigo-600">{targetYear}年{targetMonth + 1}月</p>
           </div>
 
           <div className="space-y-4">
             <button
               onClick={() => setSystemMode('admin')}
-              className="w-full px-6 py-5 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-2xl font-semibold text-lg shadow-lg hover:shadow-xl transition-all hover:scale-[1.02] flex items-center justify-center gap-3"
+              className="w-full px-6 py-5 bg-gradient-to-r from-teal-600 to-cyan-600 text-white rounded-2xl font-semibold text-lg shadow-lg hover:shadow-xl transition-all hover:scale-[1.02] flex items-center justify-center gap-3"
             >
               <Lock size={24} />
               管理者ログイン
@@ -1625,7 +1621,7 @@ const NurseScheduleSystem = () => {
   // 管理者ログイン画面
   if (systemMode === 'admin' && !isAdminAuth) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-100 flex items-center justify-center p-6">
+      <div className="min-h-screen bg-gradient-to-br from-slate-50 via-teal-50 to-cyan-100 flex items-center justify-center p-6">
         <div className="bg-white/80 backdrop-blur-sm rounded-3xl shadow-2xl p-10 w-full max-w-md border border-white/50">
           <button
             onClick={() => setSystemMode('select')}
@@ -1635,7 +1631,7 @@ const NurseScheduleSystem = () => {
           </button>
           
           <div className="text-center mb-8">
-            <div className="bg-gradient-to-br from-indigo-500 to-purple-600 p-4 rounded-2xl inline-block mb-4 shadow-lg">
+            <div className="bg-gradient-to-br from-teal-500 to-cyan-600 p-4 rounded-2xl inline-block mb-4 shadow-lg">
               <Lock className="text-white" size={40} />
             </div>
             <h1 className="text-2xl font-bold text-gray-800">管理者ログイン</h1>
@@ -1662,7 +1658,7 @@ const NurseScheduleSystem = () => {
             
             <button
               onClick={handleAdminLogin}
-              className="w-full px-6 py-3 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-xl font-semibold shadow-lg hover:shadow-xl transition-all"
+              className="w-full px-6 py-3 bg-gradient-to-r from-teal-600 to-cyan-600 text-white rounded-xl font-semibold shadow-lg hover:shadow-xl transition-all"
             >
               ログイン
             </button>
@@ -1700,7 +1696,7 @@ const NurseScheduleSystem = () => {
     };
 
     return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-100 p-4 md:p-6">
+      <div className="min-h-screen bg-gradient-to-br from-slate-50 via-teal-50 to-cyan-100 p-4 md:p-6">
         <div className="max-w-4xl mx-auto">
           {/* ヘッダー */}
           <div className="bg-white/90 backdrop-blur-sm rounded-2xl shadow-lg p-5 mb-6 border border-white/50">
@@ -1708,7 +1704,7 @@ const NurseScheduleSystem = () => {
               <div>
                 <h1 className="text-xl font-bold text-gray-800 flex items-center gap-2">
                   <FileSpreadsheet className="text-indigo-600" size={24} />
-                  看護師勤務表管理システム
+                  HCU勤務表管理システム
                 </h1>
                 <p className="text-sm text-gray-500">ダッシュボード</p>
               </div>
@@ -2242,13 +2238,13 @@ const NurseScheduleSystem = () => {
   const totalRequests: number = Object.values(monthRequests).reduce((sum: number, reqs: any) => sum + Object.keys(reqs as any).length, 0) as number;
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-100 p-4 md:p-6">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-teal-50 to-cyan-100 p-4 md:p-6">
       <div className="max-w-7xl mx-auto">
         {/* ヘッダー */}
         <div className="bg-white/90 backdrop-blur-sm rounded-2xl shadow-lg p-5 mb-6 border border-white/50">
           <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
             <div>
-              <h1 className="text-2xl font-bold text-gray-800">看護師勤務表システム</h1>
+              <h1 className="text-2xl font-bold text-gray-800">HCU勤務表システム</h1>
               <p className="text-lg font-bold text-indigo-600">{targetYear}年{targetMonth + 1}月</p>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -2269,30 +2265,30 @@ const NurseScheduleSystem = () => {
                 onClick={async () => {
                   const results: string[] = [];
                   try {
-                    const { error: r1 } = await supabase.from('requests').select('nurse_id').limit(1);
+                    const { error: r1 } = await supabase.from('hcu_requests').select('nurse_id').limit(1);
                     results.push(r1 ? '❌ requests READ: ' + r1.message : '✅ requests READ: OK');
                   } catch (e: any) { results.push('❌ requests READ: ' + e.message); }
                   try {
-                    const { error: w1 } = await supabase.from('requests').upsert(
+                    const { error: w1 } = await supabase.from('hcu_requests').upsert(
                       { nurse_id: 99999, year: 1999, month: 0, day: 99, shift_type: 'test' },
                       { onConflict: 'nurse_id,year,month,day' }
                     );
                     if (w1) { results.push('❌ requests WRITE: ' + w1.message); }
                     else {
                       results.push('✅ requests WRITE: OK');
-                      await supabase.from('requests').delete().eq('nurse_id', 99999);
+                      await supabase.from('hcu_requests').delete().eq('nurse_id', 99999);
                     }
                   } catch (e: any) { results.push('❌ requests WRITE: ' + e.message); }
                   try {
-                    const { error: r2 } = await supabase.from('nurses').select('id').limit(1);
+                    const { error: r2 } = await supabase.from('hcu_nurses').select('id').limit(1);
                     results.push(r2 ? '❌ nurses READ: ' + r2.message : '✅ nurses READ: OK');
                   } catch (e: any) { results.push('❌ nurses READ: ' + e.message); }
                   try {
-                    const { error: r3 } = await supabase.from('schedules').select('id').limit(1);
+                    const { error: r3 } = await supabase.from('hcu_schedules').select('id').limit(1);
                     results.push(r3 ? '❌ schedules READ: ' + r3.message : '✅ schedules READ: OK');
                   } catch (e: any) { results.push('❌ schedules READ: ' + e.message); }
                   try {
-                    const { error: r4 } = await supabase.from('settings').select('key').limit(1);
+                    const { error: r4 } = await supabase.from('hcu_settings').select('key').limit(1);
                     results.push(r4 ? '❌ settings READ: ' + r4.message : '✅ settings READ: OK');
                   } catch (e: any) { results.push('❌ settings READ: ' + e.message); }
                   alert('【DB診断結果】\n\n' + results.join('\n'));
@@ -2346,7 +2342,7 @@ const NurseScheduleSystem = () => {
               <button
                 onClick={generateSchedule}
                 disabled={generating}
-                className="px-4 py-2 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-xl flex items-center gap-2 shadow hover:shadow-lg transition-all disabled:opacity-50"
+                className="px-4 py-2 bg-gradient-to-r from-teal-600 to-cyan-600 text-white rounded-xl flex items-center gap-2 shadow hover:shadow-lg transition-all disabled:opacity-50"
               >
                 <RefreshCw size={18} className={generating ? 'animate-spin' : ''} />
                 {generating ? '生成中...' : '自動生成'}
@@ -2359,7 +2355,7 @@ const NurseScheduleSystem = () => {
                       // DBから勤務表データのみ削除
                       (async () => {
                         try {
-                          await supabase.from('schedules').delete()
+                          await supabase.from('hcu_schedules').delete()
                             .eq('year', targetYear).eq('month', targetMonth);
                           console.log('勤務表データを消去しました');
                         } catch (e) { console.error('消去エラー:', e); }
@@ -2601,7 +2597,7 @@ const NurseScheduleSystem = () => {
 
           // セル編集ハンドラ（schedule未生成時は自動作成）
           const handleCellClick = (nurseId: any, dayIndex: number, currentShift: string | null) => {
-            const CYCLE = ['日', '早', '遅', '夜', '休', '有', '前', '後', null];
+            const CYCLE = ['日', '夜', '休', '有', null];
             const currentIdx = currentShift ? CYCLE.indexOf(currentShift) : -1;
             const nextIdx = currentIdx >= 0 ? (currentIdx + 1) % CYCLE.length : 0;
             const newShift = CYCLE[nextIdx];
@@ -2688,7 +2684,7 @@ const NurseScheduleSystem = () => {
             {/* 手動編集の説明 */}
             <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 mb-4">
               <p className="text-sm text-blue-800">
-                <strong>💡 手動編集：</strong>セルをクリックすると「日」→「早」→「遅」→「夜」→「休」→「有」→「前（午前半休）」→「後（午後半休）」→「空」と切り替わります。「夜」選択時は翌日が自動で「明」、翌々日が自動で「休」になります。
+                <strong>💡 手動編集：</strong>セルをクリックすると「日」→「夜」→「休」→「有」→「空」と切り替わります。「夜」選択時は翌日が自動で「明」、翌々日が自動で「休」になります。
               </p>
             </div>
 
@@ -2755,7 +2751,7 @@ const NurseScheduleSystem = () => {
                     // 個人別統計を計算
                     const stats = {
                       night: shifts.filter(s => s === '夜').length,
-                      day: shifts.filter(s => s === '日' || s === '早' || s === '遅').length,
+                      day: shifts.filter(s => s === '日').length,
                       off: shifts.filter(s => s === '休' || s === '有' || s === '明').length,
                       work: shifts.filter(s => s && s !== '休' && s !== '有' && s !== '明').length
                     };
@@ -2784,7 +2780,7 @@ const NurseScheduleSystem = () => {
                           <td
                             key={i}
                             onClick={() => {
-                              const CYCLE = ['日', '早', '遅', '夜', '休', '有', '前', '後', null];
+                              const CYCLE = ['日', '夜', '休', '有', null];
                               const curIdx = shift ? CYCLE.indexOf(shift) : -1;
                               // 「明」は自動設定のみなので、クリック時は「休」へ進む
                               const nextIdx = (shift === '明') ? CYCLE.indexOf('休') : (curIdx >= 0 ? (curIdx + 1) % CYCLE.length : 0);
@@ -2918,7 +2914,7 @@ const NurseScheduleSystem = () => {
                       let count = 0;
                       activeNurses.forEach(nurse => {
                         const shift = (scheduleDisplayData[nurse.id] || [])[i];
-                        if (shift === '日' || shift === '早' || shift === '遅') count++;
+                        if (shift === '日') count++;
                       });
                       const dow = getDayOfWeek(targetYear, targetMonth, i + 1);
                       const isWeekend = dow === '土' || dow === '日';
@@ -2996,7 +2992,7 @@ const NurseScheduleSystem = () => {
                     let total = 0;
                     activeNurses.forEach(nurse => {
                       const shifts = scheduleDisplayData[nurse.id] || [];
-                      total += shifts.filter(s => s === '日' || s === '早' || s === '遅').length;
+                      total += shifts.filter(s => s === '日').length;
                     });
                     return total;
                   })()}
@@ -3097,8 +3093,6 @@ const NurseScheduleSystem = () => {
                       <th className="border p-2 text-left">氏名</th>
                       <th className="border p-2 text-center bg-purple-50">夜勤</th>
                       <th className="border p-2 text-center bg-blue-50">日勤</th>
-                      <th className="border p-2 text-center bg-sky-50">早出</th>
-                      <th className="border p-2 text-center bg-indigo-50">遅出</th>
                       <th className="border p-2 text-center bg-pink-50">夜明</th>
                       <th className="border p-2 text-center bg-gray-200">公休</th>
                       <th className="border p-2 text-center bg-emerald-50">有休</th>
@@ -3112,8 +3106,6 @@ const NurseScheduleSystem = () => {
                       const stats = {
                         night: shifts.filter(s => s === '夜').length,
                         day: shifts.filter(s => s === '日').length,
-                        early: shifts.filter(s => s === '早').length,
-                        late: shifts.filter(s => s === '遅').length,
                         ake: shifts.filter(s => s === '明').length,
                         off: shifts.filter(s => s === '休').length,
                         paid: shifts.filter(s => s === '有').length,
@@ -3141,8 +3133,6 @@ const NurseScheduleSystem = () => {
                           </td>
                           <td className="border p-2 text-center bg-purple-50 font-bold text-purple-700">{stats.night}</td>
                           <td className="border p-2 text-center bg-blue-50 font-bold text-blue-700">{stats.day}</td>
-                          <td className="border p-2 text-center bg-sky-50 font-bold text-sky-700">{stats.early}</td>
-                          <td className="border p-2 text-center bg-indigo-50 font-bold text-indigo-700">{stats.late}</td>
                           <td className="border p-2 text-center bg-pink-50 font-bold text-pink-700">{stats.ake}</td>
                           <td className="border p-2 text-center bg-gray-200 font-bold text-gray-700">{stats.off}</td>
                           <td className="border p-2 text-center bg-emerald-50 font-bold text-emerald-700">{stats.paid}</td>
@@ -3155,13 +3145,11 @@ const NurseScheduleSystem = () => {
                     <tr className="bg-gray-100 font-bold">
                       <td className="border p-2">合計</td>
                       {(() => {
-                        let totals = { night: 0, day: 0, early: 0, late: 0, ake: 0, off: 0, paid: 0, work: 0, weekend: 0 };
+                        let totals = { night: 0, day: 0, ake: 0, off: 0, paid: 0, work: 0, weekend: 0 };
                         activeNurses.forEach(nurse => {
                           const shifts = scheduleDisplayData[nurse.id] || [];
                           totals.night += shifts.filter(s => s === '夜').length;
                           totals.day += shifts.filter(s => s === '日').length;
-                          totals.early += shifts.filter(s => s === '早').length;
-                          totals.late += shifts.filter(s => s === '遅').length;
                           totals.ake += shifts.filter(s => s === '明').length;
                           totals.off += shifts.filter(s => s === '休').length;
                           totals.paid += shifts.filter(s => s === '有').length;
@@ -3177,8 +3165,6 @@ const NurseScheduleSystem = () => {
                           <>
                             <td className="border p-2 text-center bg-purple-100">{totals.night}</td>
                             <td className="border p-2 text-center bg-blue-100">{totals.day}</td>
-                            <td className="border p-2 text-center bg-sky-100">{totals.early}</td>
-                            <td className="border p-2 text-center bg-indigo-100">{totals.late}</td>
                             <td className="border p-2 text-center bg-pink-100">{totals.ake}</td>
                             <td className="border p-2 text-center bg-gray-300">{totals.off}</td>
                             <td className="border p-2 text-center bg-emerald-100">{totals.paid}</td>
@@ -3193,13 +3179,11 @@ const NurseScheduleSystem = () => {
                       <td className="border p-2 text-gray-600">平均</td>
                       {(() => {
                         const n = activeNurses.length;
-                        let totals = { night: 0, day: 0, early: 0, late: 0, ake: 0, off: 0, paid: 0, work: 0, weekend: 0 };
+                        let totals = { night: 0, day: 0, ake: 0, off: 0, paid: 0, work: 0, weekend: 0 };
                         activeNurses.forEach(nurse => {
                           const shifts = scheduleDisplayData[nurse.id] || [];
                           totals.night += shifts.filter(s => s === '夜').length;
                           totals.day += shifts.filter(s => s === '日').length;
-                          totals.early += shifts.filter(s => s === '早').length;
-                          totals.late += shifts.filter(s => s === '遅').length;
                           totals.ake += shifts.filter(s => s === '明').length;
                           totals.off += shifts.filter(s => s === '休').length;
                           totals.paid += shifts.filter(s => s === '有').length;
@@ -3215,8 +3199,6 @@ const NurseScheduleSystem = () => {
                           <>
                             <td className="border p-2 text-center text-purple-600">{(totals.night / n).toFixed(1)}</td>
                             <td className="border p-2 text-center text-blue-600">{(totals.day / n).toFixed(1)}</td>
-                            <td className="border p-2 text-center text-sky-600">{(totals.early / n).toFixed(1)}</td>
-                            <td className="border p-2 text-center text-indigo-600">{(totals.late / n).toFixed(1)}</td>
                             <td className="border p-2 text-center text-pink-600">{(totals.ake / n).toFixed(1)}</td>
                             <td className="border p-2 text-center text-gray-600">{(totals.off / n).toFixed(1)}</td>
                             <td className="border p-2 text-center text-emerald-600">{(totals.paid / n).toFixed(1)}</td>
@@ -3322,7 +3304,7 @@ const NurseScheduleSystem = () => {
                     onClick={async () => {
                       if (!confirm('⚠️ この月の全職員の希望データをDBから完全に削除しますか？\n\n削除後、職員に再入力を依頼してください。')) return;
                       try {
-                        const { error } = await supabase.from('requests').delete()
+                        const { error } = await supabase.from('hcu_requests').delete()
                           .eq('year', targetYear).eq('month', targetMonth);
                         if (error) throw error;
                         setRequests(prev => {
@@ -4101,7 +4083,7 @@ const NurseScheduleSystem = () => {
                     type="button"
                     onClick={generateSchedule}
                     disabled={generating}
-                    className="px-6 py-3 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-xl font-bold shadow-lg hover:shadow-xl transition-all disabled:opacity-50"
+                    className="px-6 py-3 bg-gradient-to-r from-teal-600 to-cyan-600 text-white rounded-xl font-bold shadow-lg hover:shadow-xl transition-all disabled:opacity-50"
                   >
                     <RefreshCw size={18} className={`inline mr-2 ${generating ? 'animate-spin' : ''}`} />
                     {generating ? '生成中...' : 'この設定で生成'}
@@ -4388,4 +4370,4 @@ const NurseScheduleSystem = () => {
   );
 };
 
-export default NurseScheduleSystem;
+export default HcuScheduleSystem;

@@ -1,7 +1,7 @@
-import NurseScheduleSystem from './NurseScheduleSystem'
+import HcuScheduleSystem from './HcuScheduleSystem'
 
 function App() {
-  return <NurseScheduleSystem />
+  return <HcuScheduleSystem />
 }
 
 export default App
