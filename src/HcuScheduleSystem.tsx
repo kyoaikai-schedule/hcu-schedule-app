@@ -22,6 +22,13 @@ const SHIFT_TYPES = {
   有: { name: '有休', hours: 0, color: 'bg-emerald-100 text-emerald-700' }
 };
 
+const VALID_SHIFTS = ['日', '夜', '明', '休', '有'];
+const sanitizeShift = (s: any): string | null => {
+  if (!s) return null;
+  const str = String(s).trim();
+  return VALID_SHIFTS.includes(str) ? str : null;
+};
+
 // Supabase DB操作関数
 const fetchNursesFromDB = async () => {
   const { data, error } = await supabase.from('hcu_nurses').select('*').order('id');
@@ -239,7 +246,8 @@ const HcuScheduleSystem = () => {
           const monthKey = `${r.year}-${r.month}`;
           if (!reqMap[monthKey]) reqMap[monthKey] = {};
           if (!reqMap[monthKey][r.nurse_id]) reqMap[monthKey][r.nurse_id] = {};
-          reqMap[monthKey][r.nurse_id][r.day] = r.shift_type;
+          const val = sanitizeShift(r.shift_type);
+          if (val) reqMap[monthKey][r.nurse_id][r.day] = val;
         });
         setRequests(reqMap);
 
@@ -247,11 +255,28 @@ const HcuScheduleSystem = () => {
         if (dbSchedules.length > 0) {
           const days = getDaysInMonth(targetYear, targetMonth);
           const schedData: Record<number, (string | null)[]> = {};
+          const invalidRows: any[] = [];
           dbSchedules.forEach((s: any) => {
             if (!schedData[s.nurse_id]) schedData[s.nurse_id] = new Array(days).fill(null);
-            schedData[s.nurse_id][s.day - 1] = s.shift;
+            const clean = sanitizeShift(s.shift);
+            schedData[s.nurse_id][s.day - 1] = clean;
+            if (!clean && s.shift) invalidRows.push(s); // DB上に不正値あり
           });
-          setSchedule({ month: `${targetYear}-${targetMonth}`, data: schedData });
+          // 不正値をDBから削除
+          if (invalidRows.length > 0) {
+            console.log(`不正シフト値を${invalidRows.length}件削除:`, invalidRows.map(r => r.shift));
+            for (const r of invalidRows) {
+              await supabase.from('hcu_schedules').delete()
+                .eq('nurse_id', r.nurse_id).eq('year', r.year).eq('month', r.month).eq('day', r.day);
+            }
+          }
+          // 有効データが残っているか確認
+          const hasValidData = Object.values(schedData).some(arr => (arr as any[]).some(v => v !== null));
+          if (hasValidData) {
+            setSchedule({ month: `${targetYear}-${targetMonth}`, data: schedData });
+          } else {
+            setSchedule(null);
+          }
         } else {
           setSchedule(null);
         }
@@ -787,15 +812,15 @@ const HcuScheduleSystem = () => {
   // シフト記号を正規化
   const normalizeShift = (shift) => {
     if (!shift) return '';
-    const s = shift.trim();
+    const s = String(shift).trim();
     if (s === '日' || s === '日勤' || s === 'D') return '日';
     if (s === '夜' || s === '夜勤' || s === 'N') return '夜';
     if (s === '明' || s === '夜明' || s === '夜勤明' || s === 'A') return '明';
-    if (s === '休' || s === '公休' || s === '公' || s === 'O') return '休';
+    if (s === '休' || s === '公休' || s === '公' || s === 'O' || s === '0') return '休';
     if (s === '有' || s === '有休' || s === '有給' || s === 'Y') return '有';
-    // nanや空白も休み扱い
     if (s === 'nan' || s === 'NaN') return '休';
-    return s;
+    // 無効な値はnull扱い
+    return VALID_SHIFTS.includes(s) ? s : '';
   };
 
   // 前月データをクリア
@@ -1002,16 +1027,19 @@ const HcuScheduleSystem = () => {
           }
         });
 
-        // 休み希望がない場合、ランダムに休日を配置（4日目以降のみ）
+        // 休み希望がない場合、ランダムに休日を配置（制約日以降）
         activeNurses.forEach((nurse, idx) => {
           const currentDaysOff = stats[nurse.id].daysOff;
           if (currentDaysOff < targetDaysOff) {
             const offDays = new Set();
             let attempts = 0;
+            // この職員の制約日数（最大2日）を超えた日から配置
+            const nurseConstraintDays = prevMonthConstraints[nurse.id] 
+              ? Math.max(...Object.keys(prevMonthConstraints[nurse.id]).map(Number), 0) 
+              : 0;
+            const minDay = nurseConstraintDays; // 制約最終日の次（0ベース）
             while (offDays.size < (targetDaysOff - currentDaysOff) && attempts < 100) {
               const rng = seed + idx * 7919 + attempts * 997;
-              // 前月制約がある場合は4日目以降からランダム配置
-              const minDay = Object.keys(prevMonthConstraints).length > 0 ? 3 : 0;
               const day = minDay + Math.floor((Math.abs(Math.sin(rng) * 10000)) % (daysInMonth - minDay));
               if (!newSchedule[nurse.id][day]) {
                 offDays.add(day);
@@ -2009,6 +2037,134 @@ const HcuScheduleSystem = () => {
             </div>
           </div>
         )}
+
+        {/* Excel読込モーダル（ダッシュボード内） */}
+        {showExcelImport && (
+          <div className="fixed inset-0 bg-black/50 z-50 overflow-y-auto">
+            <div className="min-h-full flex items-center justify-center p-4">
+              <div className="bg-white rounded-2xl p-6 w-full max-w-4xl my-4">
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-xl font-bold">
+                  {excelImportConfirmed ? '✅ 職員情報 読み込み完了' : 'Excelから職員情報を読み込み'}
+                </h3>
+                <button onClick={closeExcelImport} className="p-2 hover:bg-gray-100 rounded-full transition-colors">
+                  <X size={24} />
+                </button>
+              </div>
+
+              {excelImportConfirmed ? (
+                <>
+                  <div className="bg-green-50 border border-green-200 rounded-xl p-4 mb-4">
+                    <p className="text-green-800 font-bold text-lg mb-1">✅ {nurses.filter(n => n.active).length}名の職員情報を読み込みました</p>
+                    <p className="text-sm text-green-700">職員一覧が更新されました。</p>
+                  </div>
+                  <div className="border rounded-lg max-h-64 overflow-y-auto mb-6">
+                    <table className="w-full">
+                      <thead className="bg-gray-50 sticky top-0">
+                        <tr>
+                          <th className="px-4 py-2 text-left text-sm">No.</th>
+                          <th className="px-4 py-2 text-left text-sm">氏名</th>
+                          <th className="px-4 py-2 text-left text-sm">役職</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {nurses.filter(n => n.active).map((nurse, idx) => (
+                          <tr key={nurse.id} className="border-t">
+                            <td className="px-4 py-2 text-sm">{idx + 1}</td>
+                            <td className="px-4 py-2 text-sm font-medium">{nurse.name}</td>
+                            <td className="px-4 py-2 text-sm">
+                              <span className={`text-xs px-2 py-1 rounded ${POSITIONS[nurse.position]?.color}`}>{nurse.position}</span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="flex justify-end">
+                    <button onClick={closeExcelImport}
+                      className="px-6 py-3 bg-teal-600 hover:bg-teal-700 text-white rounded-xl font-semibold transition-colors">
+                      閉じる
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6 p-4 bg-gray-50 rounded-xl">
+                <div>
+                  <label className="block text-sm font-medium mb-1">開始行</label>
+                  <input type="number" min="1" value={importConfig.startRow}
+                    onChange={(e) => { const c = { ...importConfig, startRow: parseInt(e.target.value) || 1 }; setImportConfig(c); updateExcelPreview(excelData, c); }}
+                    className="w-full px-3 py-2 border rounded-lg" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">終了行</label>
+                  <input type="number" min="1" value={importConfig.endRow}
+                    onChange={(e) => { const c = { ...importConfig, endRow: parseInt(e.target.value) || 30 }; setImportConfig(c); updateExcelPreview(excelData, c); }}
+                    className="w-full px-3 py-2 border rounded-lg" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">氏名列</label>
+                  <input type="text" value={importConfig.nameColumn}
+                    onChange={(e) => { const c = { ...importConfig, nameColumn: e.target.value.toUpperCase() }; setImportConfig(c); updateExcelPreview(excelData, c); }}
+                    className="w-full px-3 py-2 border rounded-lg" placeholder="C" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">役職列</label>
+                  <input type="text" value={importConfig.positionColumn}
+                    onChange={(e) => { const c = { ...importConfig, positionColumn: e.target.value.toUpperCase() }; setImportConfig(c); updateExcelPreview(excelData, c); }}
+                    className="w-full px-3 py-2 border rounded-lg" placeholder="D" />
+                </div>
+              </div>
+              <div className="mb-6">
+                <h4 className="font-semibold mb-3">プレビュー（{excelPreview.length}名）</h4>
+                <div className="border rounded-lg max-h-64 overflow-y-auto">
+                  <table className="w-full">
+                    <thead className="bg-gray-50 sticky top-0">
+                      <tr>
+                        <th className="px-4 py-2 text-left text-sm">行</th>
+                        <th className="px-4 py-2 text-left text-sm">氏名</th>
+                        <th className="px-4 py-2 text-left text-sm">役職（読取値）</th>
+                        <th className="px-4 py-2 text-left text-sm">判定役職</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {excelPreview.length === 0 ? (
+                        <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">データが見つかりません</td></tr>
+                      ) : (
+                        excelPreview.map((item, index) => {
+                          const posStr = (item.position || '').replace(/\s+/g, '');
+                          let jp = '一般';
+                          if (posStr.includes('師長')) jp = '師長';
+                          else if (posStr.includes('副主任') || (posStr.includes('副') && posStr.includes('主任'))) jp = '副主任';
+                          else if (posStr.includes('主任')) jp = '主任';
+                          return (
+                            <tr key={index} className="border-t">
+                              <td className="px-4 py-2 text-sm">{item.row}</td>
+                              <td className="px-4 py-2 text-sm font-medium">{item.name}</td>
+                              <td className="px-4 py-2 text-sm text-gray-500">{item.position || '-'}</td>
+                              <td className="px-4 py-2 text-sm"><span className={`text-xs px-2 py-1 rounded ${POSITIONS[jp]?.color}`}>{jp}</span></td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-6">
+                <p className="text-sm text-amber-800"><strong>⚠️ 注意：</strong>「反映」で現在の職員リストが<strong>全て上書き</strong>されます。</p>
+              </div>
+              <div className="flex justify-end gap-3">
+                <button onClick={closeExcelImport} className="px-6 py-2 bg-gray-200 hover:bg-gray-300 rounded-xl transition-colors">キャンセル</button>
+                <button onClick={applyExcelImport} disabled={excelPreview.length === 0}
+                  className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl disabled:opacity-50 transition-colors">反映</button>
+              </div>
+                </>
+              )}
+            </div>
+          </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -2654,8 +2810,16 @@ const HcuScheduleSystem = () => {
         {(() => {
           // 表示用データを計算（schedule存在時はそのデータ、未生成時は希望＋制約から構築）
           const scheduleDisplayData: { [key: string]: any[] } = {};
-          if (schedule) {
-            Object.assign(scheduleDisplayData, schedule.data);
+          if (schedule && schedule.month === `${targetYear}-${targetMonth}`) {
+            // スケジュールデータからコピー（全職員分を保証＋サニタイズ）
+            activeNurses.forEach(nurse => {
+              const raw = schedule.data[nurse.id];
+              if (raw && Array.isArray(raw)) {
+                scheduleDisplayData[nurse.id] = raw.map(s => sanitizeShift(s));
+              } else {
+                scheduleDisplayData[nurse.id] = new Array(daysInMonth).fill(null);
+              }
+            });
           } else {
             activeNurses.forEach(nurse => {
               const shifts = new Array(daysInMonth).fill(null);
@@ -2871,74 +3035,7 @@ const HcuScheduleSystem = () => {
                           return (
                           <td
                             key={i}
-                            onClick={() => {
-                              const CYCLE = ['日', '夜', '休', '有', null];
-                              const curIdx = shift ? CYCLE.indexOf(shift) : -1;
-                              // 「明」は自動設定のみなので、クリック時は「休」へ進む
-                              const nextIdx = (shift === '明') ? CYCLE.indexOf('休') : (curIdx >= 0 ? (curIdx + 1) % CYCLE.length : 0);
-                              const newShift = CYCLE[nextIdx];
-                              const prevShift = shift;
-                              
-                              const doUpdate = (prevData: any) => {
-                                const newData = JSON.parse(JSON.stringify(prevData));
-                                if (!newData[nurse.id]) newData[nurse.id] = new Array(daysInMonth).fill(null);
-                                
-                                // 以前「夜」だった場合 → 翌日の「明」と翌々日の「休」を元に戻す
-                                if (prevShift === '夜') {
-                                  // 翌日「明」を復元
-                                  if (i + 1 < daysInMonth && newData[nurse.id][i + 1] === '明') {
-                                    const bk1 = `sched-${nurse.id}-${i + 1}`;
-                                    const origVal1 = autoAkeBackup[bk1] ?? null;
-                                    newData[nurse.id][i + 1] = origVal1;
-                                    updateScheduleCellInDB(nurse.id, targetYear, targetMonth, i + 2, origVal1);
-                                    setAutoAkeBackup(prev => { const n = {...prev}; delete n[bk1]; return n; });
-                                  }
-                                  // 翌々日「休」を復元
-                                  if (i + 2 < daysInMonth && newData[nurse.id][i + 2] === '休') {
-                                    const bk2 = `sched-${nurse.id}-${i + 2}`;
-                                    const origVal2 = autoAkeBackup[bk2] ?? null;
-                                    newData[nurse.id][i + 2] = origVal2;
-                                    updateScheduleCellInDB(nurse.id, targetYear, targetMonth, i + 3, origVal2);
-                                    setAutoAkeBackup(prev => { const n = {...prev}; delete n[bk2]; return n; });
-                                  }
-                                }
-                                
-                                newData[nurse.id][i] = newShift;
-                                
-                                // 「夜」を選択 → 翌日を「明」、翌々日を「休」に設定
-                                if (newShift === '夜') {
-                                  if (i + 1 < daysInMonth) {
-                                    const bk1 = `sched-${nurse.id}-${i + 1}`;
-                                    setAutoAkeBackup(prev => ({...prev, [bk1]: newData[nurse.id][i + 1]}));
-                                    newData[nurse.id][i + 1] = '明';
-                                    updateScheduleCellInDB(nurse.id, targetYear, targetMonth, i + 2, '明');
-                                  }
-                                  if (i + 2 < daysInMonth) {
-                                    const bk2 = `sched-${nurse.id}-${i + 2}`;
-                                    setAutoAkeBackup(prev => ({...prev, [bk2]: newData[nurse.id][i + 2]}));
-                                    newData[nurse.id][i + 2] = '休';
-                                    updateScheduleCellInDB(nurse.id, targetYear, targetMonth, i + 3, '休');
-                                  }
-                                }
-                                return newData;
-                              };
-
-                              if (schedule) {
-                                setSchedule((prev: any) => ({
-                                  ...prev,
-                                  data: doUpdate(prev.data)
-                                }));
-                              } else {
-                                // 未生成時：displayDataからscheduleを新規作成
-                                const baseData = {};
-                                activeNurses.forEach(n => {
-                                  baseData[n.id] = scheduleDisplayData[n.id] ? [...scheduleDisplayData[n.id]] : new Array(daysInMonth).fill(null);
-                                });
-                                const newData = doUpdate(baseData);
-                                setSchedule({ month: `${targetYear}-${targetMonth}`, data: newData });
-                              }
-                              updateScheduleCellInDB(nurse.id, targetYear, targetMonth, day, newShift);
-                            }}
+                            onClick={() => handleCellClick(nurse.id, i, sanitizeShift(shift))}
                             className={`border p-1 text-center cursor-pointer hover:bg-blue-50 transition-colors ${SHIFT_TYPES[shift]?.color || ''} ${
                               matchesRequest ? 'border-2 border-green-500' :
                               differsFromRequest ? 'border-2 border-red-400' :
@@ -3559,186 +3656,6 @@ const HcuScheduleSystem = () => {
           </div>
           </div>
         )}
-
-        {/* Excel読み込みモーダル */}
-        {showExcelImport && (
-          <div className="fixed inset-0 bg-black/50 z-50 overflow-y-auto">
-            <div className="min-h-full flex items-center justify-center p-4">
-              <div className="bg-white rounded-2xl p-6 w-full max-w-4xl my-4">
-              <div className="flex justify-between items-center mb-4">
-                <h3 className="text-xl font-bold">
-                  {excelImportConfirmed ? '✅ 職員情報 読み込み完了' : 'Excelから職員情報を読み込み'}
-                </h3>
-                <button onClick={closeExcelImport} className="p-2 hover:bg-gray-100 rounded-full transition-colors">
-                  <X size={24} />
-                </button>
-              </div>
-
-              {excelImportConfirmed ? (
-                <>
-                  <div className="bg-green-50 border border-green-200 rounded-xl p-4 mb-4">
-                    <p className="text-green-800 font-bold text-lg mb-1">✅ {activeNurses.length}名の職員情報を読み込みました</p>
-                    <p className="text-sm text-green-700">職員一覧が更新されました。以下が登録済みの職員です。</p>
-                  </div>
-                  <div className="border rounded-lg max-h-64 overflow-y-auto mb-6">
-                    <table className="w-full">
-                      <thead className="bg-gray-50 sticky top-0">
-                        <tr>
-                          <th className="px-4 py-2 text-left text-sm">No.</th>
-                          <th className="px-4 py-2 text-left text-sm">氏名</th>
-                          <th className="px-4 py-2 text-left text-sm">役職</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {activeNurses.map((nurse, idx) => (
-                          <tr key={nurse.id} className="border-t">
-                            <td className="px-4 py-2 text-sm">{idx + 1}</td>
-                            <td className="px-4 py-2 text-sm font-medium">{nurse.name}</td>
-                            <td className="px-4 py-2 text-sm">
-                              <span className={`text-xs px-2 py-1 rounded ${POSITIONS[nurse.position]?.color}`}>{nurse.position}</span>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                  <div className="flex justify-end">
-                    <button onClick={closeExcelImport}
-                      className="px-6 py-3 bg-teal-600 hover:bg-teal-700 text-white rounded-xl font-semibold transition-colors">
-                      閉じる
-                    </button>
-                  </div>
-                </>
-              ) : (
-                <>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6 p-4 bg-gray-50 rounded-xl">
-                <div>
-                  <label className="block text-sm font-medium mb-1">開始行</label>
-                  <input
-                    type="number"
-                    min="1"
-                    value={importConfig.startRow}
-                    onChange={(e) => {
-                      const newConfig = { ...importConfig, startRow: parseInt(e.target.value) || 1 };
-                      setImportConfig(newConfig);
-                      updateExcelPreview(excelData, newConfig);
-                    }}
-                    className="w-full px-3 py-2 border rounded-lg"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">終了行</label>
-                  <input
-                    type="number"
-                    min="1"
-                    value={importConfig.endRow}
-                    onChange={(e) => {
-                      const newConfig = { ...importConfig, endRow: parseInt(e.target.value) || 30 };
-                      setImportConfig(newConfig);
-                      updateExcelPreview(excelData, newConfig);
-                    }}
-                    className="w-full px-3 py-2 border rounded-lg"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">氏名列</label>
-                  <input
-                    type="text"
-                    value={importConfig.nameColumn}
-                    onChange={(e) => {
-                      const newConfig = { ...importConfig, nameColumn: e.target.value.toUpperCase() };
-                      setImportConfig(newConfig);
-                      updateExcelPreview(excelData, newConfig);
-                    }}
-                    className="w-full px-3 py-2 border rounded-lg"
-                    placeholder="C"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">役職列</label>
-                  <input
-                    type="text"
-                    value={importConfig.positionColumn}
-                    onChange={(e) => {
-                      const newConfig = { ...importConfig, positionColumn: e.target.value.toUpperCase() };
-                      setImportConfig(newConfig);
-                      updateExcelPreview(excelData, newConfig);
-                    }}
-                    className="w-full px-3 py-2 border rounded-lg"
-                    placeholder="D"
-                  />
-                </div>
-              </div>
-
-              <div className="mb-6">
-                <h4 className="font-semibold mb-3">プレビュー（{excelPreview.length}名）</h4>
-                <div className="border rounded-lg max-h-64 overflow-y-auto">
-                  <table className="w-full">
-                    <thead className="bg-gray-50 sticky top-0">
-                      <tr>
-                        <th className="px-4 py-2 text-left text-sm">行</th>
-                        <th className="px-4 py-2 text-left text-sm">氏名</th>
-                        <th className="px-4 py-2 text-left text-sm">役職（読取値）</th>
-                        <th className="px-4 py-2 text-left text-sm">判定役職</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {excelPreview.length === 0 ? (
-                        <tr>
-                          <td colSpan={4} className="px-4 py-8 text-center text-gray-500">
-                            データが見つかりません
-                          </td>
-                        </tr>
-                      ) : (
-                        excelPreview.map((item, index) => {
-                          const posStr = (item.position || '').replace(/\s+/g, '');
-                          let judgedPos = '一般';
-                          if (posStr.includes('師長')) judgedPos = '師長';
-                          else if (posStr.includes('主任') && !posStr.includes('副')) judgedPos = '主任';
-                          else if (posStr.includes('副主任') || (posStr.includes('副') && posStr.includes('主任'))) judgedPos = '副主任';
-                          return (
-                            <tr key={index} className="border-t">
-                              <td className="px-4 py-2 text-sm">{item.row}</td>
-                              <td className="px-4 py-2 text-sm font-medium">{item.name}</td>
-                              <td className="px-4 py-2 text-sm text-gray-500">{item.position || '-'}</td>
-                              <td className="px-4 py-2 text-sm">
-                                <span className={`text-xs px-2 py-1 rounded ${POSITIONS[judgedPos]?.color}`}>{judgedPos}</span>
-                              </td>
-                            </tr>
-                          );
-                        })
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-6">
-                <p className="text-sm text-amber-800">
-                  <strong>⚠️ 注意：</strong>「反映」をクリックすると、現在の職員リストが<strong>全て上書き</strong>されます。確認ダイアログが表示されます。
-                </p>
-              </div>
-
-              <div className="flex justify-end gap-3">
-                <button onClick={closeExcelImport}
-                  className="px-6 py-2 bg-gray-200 hover:bg-gray-300 rounded-xl transition-colors">
-                  キャンセル
-                </button>
-                <button
-                  onClick={applyExcelImport}
-                  disabled={excelPreview.length === 0}
-                  className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl disabled:opacity-50 transition-colors"
-                >
-                  反映
-                </button>
-              </div>
-                </>
-              )}
-            </div>
-          </div>
-          </div>
-        )}
-
         {/* 削除確認モーダル */}
         {deleteConfirm && (
           <div className="fixed inset-0 bg-black/50 z-50 overflow-y-auto">
