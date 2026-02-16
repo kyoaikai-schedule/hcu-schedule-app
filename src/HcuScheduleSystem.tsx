@@ -1702,78 +1702,83 @@ const HcuScheduleSystem = () => {
   };
 
   // 職員用希望入力：夜勤対応のセルクリックハンドラ
-  const handleStaffRequestClick = (day: number, currentRequest: string | null) => {
-    // サイクル: 空→休→有→前→後→日→夜→空
-    // 「明」は夜の自動設定なのでサイクルに含めない（クリックで「休」に遷移）
-    let newValue: string | null;
-    if (!currentRequest) newValue = '休';
-    else if (currentRequest === '休') newValue = '有';
-    else if (currentRequest === '有') newValue = '前';
-    else if (currentRequest === '前') newValue = '後';
-    else if (currentRequest === '後') newValue = '日';
-    else if (currentRequest === '日') newValue = '夜';
-    else if (currentRequest === '明') newValue = '休'; // 明けをクリック→休に変更
-    else newValue = null; // 夜 or その他→クリア
-
+  const handleStaffRequestClick = (day: number, _currentRequest: string | null) => {
     const days = getDaysInMonth(targetYear, targetMonth);
     const monthKey = `${targetYear}-${targetMonth}`;
     const nurseIdKey = String(staffNurseId);
 
-    // 一括更新用の変更マップ { day: value } を構築
-    const changes: Record<number, string | null> = {};
-    changes[day] = newValue;
+    // DB保存用の変更記録
+    const dbChanges: Record<number, string | null> = {};
 
-    // 現在のリクエスト値を取得
-    const myReqs = { ...(requests[monthKey]?.[nurseIdKey] || {}) };
-
-    // ① 現在が「夜」で別の値に変更 → 自動セットした明・休のみクリア
-    if (currentRequest === '夜' && newValue !== '夜') {
-      if (day + 1 <= days && myReqs[day + 1] === '明') {
-        changes[day + 1] = null;
-      }
-      if (day + 2 <= days && myReqs[day + 2] === '休') {
-        // 翌々日の「休」が別の夜勤の自動休でない場合のみクリア
-        // (前々日が夜でなければ、この休は当該夜勤由来)
-        const d2 = day + 2;
-        const prevIsNight = d2 >= 2 && myReqs[d2 - 2] !== undefined && myReqs[d2 - 2] === '夜' && (d2 - 2) !== day;
-        if (!prevIsNight) {
-          changes[day + 2] = null;
-        }
-      }
-    }
-
-    // ② 新しい値が「夜」→ 翌日・翌々日が空の場合のみ自動セット
-    if (newValue === '夜') {
-      if (day + 1 <= days && !myReqs[day + 1]) {
-        changes[day + 1] = '明';
-      }
-      if (day + 2 <= days && !myReqs[day + 2]) {
-        changes[day + 2] = '休';
-      }
-    }
-
-    // ③ 一括でstateを更新
     setRequests((prev: any) => {
       const monthRequests = { ...(prev[monthKey] || {}) };
       const nurseRequests = { ...(monthRequests[nurseIdKey] || {}) };
-      Object.entries(changes).forEach(([d, val]) => {
-        if (val) {
-          nurseRequests[Number(d)] = val;
-        } else {
-          delete nurseRequests[Number(d)];
+
+      // ★ 最新stateから現在値を取得（クロージャの古い値を使わない）
+      const currentRequest = nurseRequests[day] || null;
+
+      // サイクル: 空→休→有→前→後→日→夜→空
+      // 「明」はクリック→休に変更
+      let newValue: string | null;
+      if (!currentRequest) newValue = '休';
+      else if (currentRequest === '休') newValue = '有';
+      else if (currentRequest === '有') newValue = '前';
+      else if (currentRequest === '前') newValue = '後';
+      else if (currentRequest === '後') newValue = '日';
+      else if (currentRequest === '日') newValue = '夜';
+      else if (currentRequest === '明') newValue = '休';
+      else newValue = null; // 夜 or その他→クリア
+
+      // ① 「夜」解除時 → 自動セットした明・休のみクリア
+      if (currentRequest === '夜') {
+        if (day + 1 <= days && nurseRequests[day + 1] === '明') {
+          delete nurseRequests[day + 1];
+          dbChanges[day + 1] = null;
         }
-      });
+        if (day + 2 <= days && nurseRequests[day + 2] === '休') {
+          // 別の夜勤由来の休でないか確認
+          const d2 = day + 2;
+          const otherNightBefore = d2 >= 2 && nurseRequests[d2 - 2] === '夜' && (d2 - 2) !== day;
+          if (!otherNightBefore) {
+            delete nurseRequests[day + 2];
+            dbChanges[day + 2] = null;
+          }
+        }
+      }
+
+      // ② セル値更新
+      if (newValue) {
+        nurseRequests[day] = newValue;
+      } else {
+        delete nurseRequests[day];
+      }
+      dbChanges[day] = newValue;
+
+      // ③ 新しく「夜」→ 翌日・翌々日が空の場合のみ自動セット
+      if (newValue === '夜') {
+        if (day + 1 <= days && !nurseRequests[day + 1]) {
+          nurseRequests[day + 1] = '明';
+          dbChanges[day + 1] = '明';
+        }
+        if (day + 2 <= days && !nurseRequests[day + 2]) {
+          nurseRequests[day + 2] = '休';
+          dbChanges[day + 2] = '休';
+        }
+      }
+
       monthRequests[nurseIdKey] = nurseRequests;
       return { ...prev, [monthKey]: monthRequests };
     });
 
-    // ④ DB保存（各変更を個別に）
-    if (staffNurseId) {
-      Object.entries(changes).forEach(([d, val]) => {
-        saveRequestToDB(staffNurseId, targetYear, targetMonth, Number(d), val)
-          .catch(e => console.error('DB保存失敗:', e));
-      });
-    }
+    // ④ DB保存（state更新後に実行）
+    setTimeout(() => {
+      if (staffNurseId) {
+        Object.entries(dbChanges).forEach(([d, val]) => {
+          saveRequestToDB(staffNurseId, targetYear, targetMonth, Number(d), val)
+            .catch(e => console.error('DB保存失敗:', e));
+        });
+      }
+    }, 0);
   };
 
   const getOtherRequestsCount = (day) => {
@@ -3109,19 +3114,29 @@ const HcuScheduleSystem = () => {
               // ② クリックしたセルの値を更新
               newData[nurseId][dayIndex] = newShift;
               
-              // ③ 新しいシフトが「夜」→ 翌日・翌々日をバックアップしてから上書き
+              // ③ 新しいシフトが「夜」→ 翌日・翌々日が空の場合のみバックアップ＆上書き
               if (newShift === '夜') {
                 if (dayIndex + 1 < daysInMonth) {
                   const key1 = `${nurseId}-${dayIndex + 1}`;
-                  bk[key1] = newData[nurseId][dayIndex + 1]; // 現在の値を保存
-                  newData[nurseId][dayIndex + 1] = '明';
-                  updateScheduleCellInDB(nurseId, targetYear, targetMonth, dayIndex + 2, '明');
+                  const existing1 = newData[nurseId][dayIndex + 1];
+                  if (!existing1) {
+                    // 空の場合のみ：バックアップして「明」を設定
+                    bk[key1] = existing1;
+                    newData[nurseId][dayIndex + 1] = '明';
+                    updateScheduleCellInDB(nurseId, targetYear, targetMonth, dayIndex + 2, '明');
+                  }
+                  // 既に値がある場合は何もしない（上書きしない）
                 }
                 if (dayIndex + 2 < daysInMonth) {
                   const key2 = `${nurseId}-${dayIndex + 2}`;
-                  bk[key2] = newData[nurseId][dayIndex + 2]; // 現在の値を保存
-                  newData[nurseId][dayIndex + 2] = '休';
-                  updateScheduleCellInDB(nurseId, targetYear, targetMonth, dayIndex + 3, '休');
+                  const existing2 = newData[nurseId][dayIndex + 2];
+                  if (!existing2) {
+                    // 空の場合のみ：バックアップして「休」を設定
+                    bk[key2] = existing2;
+                    newData[nurseId][dayIndex + 2] = '休';
+                    updateScheduleCellInDB(nurseId, targetYear, targetMonth, dayIndex + 3, '休');
+                  }
+                  // 既に値がある場合は何もしない（上書きしない）
                 }
               }
               
