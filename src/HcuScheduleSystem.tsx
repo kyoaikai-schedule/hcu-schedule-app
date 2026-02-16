@@ -1716,34 +1716,63 @@ const HcuScheduleSystem = () => {
     else newValue = null; // 夜 or その他→クリア
 
     const days = getDaysInMonth(targetYear, targetMonth);
+    const monthKey = `${targetYear}-${targetMonth}`;
+    const nurseIdKey = String(staffNurseId);
 
-    // ① 現在が「夜」で別の値に変更 → 翌日「明」・翌々日「休」をクリア
+    // 一括更新用の変更マップ { day: value } を構築
+    const changes: Record<number, string | null> = {};
+    changes[day] = newValue;
+
+    // 現在のリクエスト値を取得
+    const myReqs = { ...(requests[monthKey]?.[nurseIdKey] || {}) };
+
+    // ① 現在が「夜」で別の値に変更 → 自動セットした明・休のみクリア
     if (currentRequest === '夜' && newValue !== '夜') {
-      const monthKey = `${targetYear}-${targetMonth}`;
-      const nurseIdKey = String(staffNurseId);
-      const myReqs = requests[monthKey]?.[nurseIdKey] || {};
       if (day + 1 <= days && myReqs[day + 1] === '明') {
-        updateRequest(day + 1, null);
+        changes[day + 1] = null;
       }
       if (day + 2 <= days && myReqs[day + 2] === '休') {
-        updateRequest(day + 2, null);
+        // 翌々日の「休」が別の夜勤の自動休でない場合のみクリア
+        // (前々日が夜でなければ、この休は当該夜勤由来)
+        const d2 = day + 2;
+        const prevIsNight = d2 >= 2 && myReqs[d2 - 2] !== undefined && myReqs[d2 - 2] === '夜' && (d2 - 2) !== day;
+        if (!prevIsNight) {
+          changes[day + 2] = null;
+        }
       }
     }
 
-    // ② 現在の値を更新
-    updateRequest(day, newValue);
-
-    // ③ 新しい値が「夜」→ 翌日・翌々日が空の場合のみ自動セット
+    // ② 新しい値が「夜」→ 翌日・翌々日が空の場合のみ自動セット
     if (newValue === '夜') {
-      const monthKey = `${targetYear}-${targetMonth}`;
-      const nurseIdKey = String(staffNurseId);
-      const myReqs2 = requests[monthKey]?.[nurseIdKey] || {};
-      if (day + 1 <= days && !myReqs2[day + 1]) {
-        updateRequest(day + 1, '明');
+      if (day + 1 <= days && !myReqs[day + 1]) {
+        changes[day + 1] = '明';
       }
-      if (day + 2 <= days && !myReqs2[day + 2]) {
-        updateRequest(day + 2, '休');
+      if (day + 2 <= days && !myReqs[day + 2]) {
+        changes[day + 2] = '休';
       }
+    }
+
+    // ③ 一括でstateを更新
+    setRequests((prev: any) => {
+      const monthRequests = { ...(prev[monthKey] || {}) };
+      const nurseRequests = { ...(monthRequests[nurseIdKey] || {}) };
+      Object.entries(changes).forEach(([d, val]) => {
+        if (val) {
+          nurseRequests[Number(d)] = val;
+        } else {
+          delete nurseRequests[Number(d)];
+        }
+      });
+      monthRequests[nurseIdKey] = nurseRequests;
+      return { ...prev, [monthKey]: monthRequests };
+    });
+
+    // ④ DB保存（各変更を個別に）
+    if (staffNurseId) {
+      Object.entries(changes).forEach(([d, val]) => {
+        saveRequestToDB(staffNurseId, targetYear, targetMonth, Number(d), val)
+          .catch(e => console.error('DB保存失敗:', e));
+      });
     }
   };
 
@@ -2292,6 +2321,58 @@ const HcuScheduleSystem = () => {
               </div>
                 </>
               )}
+            </div>
+          </div>
+          </div>
+        )}
+
+        {/* 看護師追加モーダル（ダッシュボード内） */}
+        {showAddNurse && (
+          <div className="fixed inset-0 bg-black/50 z-50 overflow-y-auto">
+            <div className="min-h-full flex items-center justify-center p-4">
+              <div className="bg-white rounded-2xl p-6 w-full max-w-md my-4">
+              <h3 className="text-xl font-bold mb-4">職員を追加</h3>
+              <div className="space-y-4 mb-6">
+                <div>
+                  <label className="block text-sm font-medium mb-1">氏名</label>
+                  <input
+                    type="text"
+                    value={newNurseData.name}
+                    onChange={(e) => setNewNurseData({ ...newNurseData, name: e.target.value })}
+                    className="w-full px-3 py-2 border-2 rounded-lg focus:border-indigo-500 focus:outline-none"
+                    placeholder="例：山田 花子"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">役職</label>
+                  <select
+                    value={newNurseData.position}
+                    onChange={(e) => setNewNurseData({ ...newNurseData, position: e.target.value })}
+                    className="w-full px-3 py-2 border-2 rounded-lg focus:border-indigo-500 focus:outline-none"
+                  >
+                    {Object.keys(POSITIONS).map(pos => (
+                      <option key={pos} value={pos}>{pos}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => {
+                    setShowAddNurse(false);
+                    setNewNurseData({ name: '', position: '一般' });
+                  }}
+                  className="flex-1 px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded-lg transition-colors"
+                >
+                  キャンセル
+                </button>
+                <button
+                  onClick={addNurse}
+                  className="flex-1 px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg transition-colors"
+                >
+                  追加
+                </button>
+              </div>
             </div>
           </div>
           </div>
