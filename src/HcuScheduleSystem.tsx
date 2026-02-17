@@ -18,11 +18,13 @@ const SHIFT_TYPES = {
   日: { name: '日勤', hours: 7.5, color: 'bg-blue-100 text-blue-700' },
   夜: { name: '夜勤', hours: 14.5, color: 'bg-purple-100 text-purple-700' },
   明: { name: '夜明', hours: 0, color: 'bg-pink-100 text-pink-700' },
+  管夜: { name: '管理夜勤', hours: 14.5, color: 'bg-teal-100 text-teal-700' },
+  管明: { name: '管理夜明', hours: 0, color: 'bg-cyan-100 text-cyan-700' },
   休: { name: '公休', hours: 0, color: 'bg-gray-100 text-gray-600' },
   有: { name: '有休', hours: 0, color: 'bg-emerald-100 text-emerald-700' }
 };
 
-const VALID_SHIFTS = ['日', '夜', '明', '休', '有'];
+const VALID_SHIFTS = ['日', '夜', '明', '管夜', '管明', '休', '有'];
 const sanitizeShift = (s: any): string | null => {
   if (!s) return null;
   const str = String(s).trim();
@@ -299,7 +301,9 @@ const HcuScheduleSystem = () => {
                 reCalc[nurseId] = {};
                 if (last === '夜') {
                   reCalc[nurseId][1] = '明'; reCalc[nurseId][2] = '休';
-                } else if (last === '明') {
+                } else if (last === '管夜') {
+                  reCalc[nurseId][1] = '管明'; reCalc[nurseId][2] = '休';
+                } else if (last === '明' || last === '管明') {
                   reCalc[nurseId][1] = '休';
                 }
               });
@@ -794,8 +798,13 @@ const HcuScheduleSystem = () => {
         constraints[nurse.id][1] = '明';  // 1日目
         constraints[nurse.id][2] = '休';  // 2日目
       }
-      // 前月末が「夜勤明け」の場合 → 1日目=休
-      else if (lastShift === '明') {
+      // 前月末が「管理夜勤」の場合 → 1日目=管明, 2日目=休
+      else if (lastShift === '管夜') {
+        constraints[nurse.id][1] = '管明';  // 1日目
+        constraints[nurse.id][2] = '休';    // 2日目
+      }
+      // 前月末が「夜勤明け」or「管理夜明」の場合 → 1日目=休
+      else if (lastShift === '明' || lastShift === '管明') {
         constraints[nurse.id][1] = '休';  // 1日目
       }
       // それ以外 → 制約なし
@@ -817,6 +826,8 @@ const HcuScheduleSystem = () => {
     if (s === '日' || s === '日勤' || s === 'D') return '日';
     if (s === '夜' || s === '夜勤' || s === 'N') return '夜';
     if (s === '明' || s === '夜明' || s === '夜勤明' || s === 'A') return '明';
+    if (s === '管夜' || s === '管理夜勤') return '管夜';
+    if (s === '管明' || s === '管理夜明' || s === '管理夜勤明') return '管明';
     if (s === '休' || s === '公休' || s === '公' || s === 'O' || s === '0') return '休';
     if (s === '有' || s === '有休' || s === '有給' || s === 'Y') return '有';
     if (s === 'nan' || s === 'NaN') return '休';
@@ -990,10 +1001,10 @@ const HcuScheduleSystem = () => {
                 newSchedule[nurse.id][dayIndex] = shift;
                 if (shift === '休' || shift === '有') {
                   stats[nurse.id].daysOff++;
-                } else if (shift === '夜') {
+                } else if (shift === '夜' || shift === '管夜') {
                   stats[nurse.id].nightCount++;
                   stats[nurse.id].totalWork++;
-                } else if (shift !== '明') {
+                } else if (shift !== '明' && shift !== '管明') {
                   stats[nurse.id].totalWork++;
                 }
               }
@@ -1010,12 +1021,13 @@ const HcuScheduleSystem = () => {
                 newSchedule[nurse.id][day] = existingShift;
                 if (existingShift === '休' || existingShift === '有') {
                   stats[nurse.id].daysOff++;
-                } else if (existingShift === '夜') {
+                } else if (existingShift === '夜' || existingShift === '管夜') {
                   stats[nurse.id].nightCount++;
                   stats[nurse.id].totalWork++;
+                  const akeType = existingShift === '夜' ? '明' : '管明';
                   // 夜勤希望時、翌日自動明け・翌々日自動休
                   if (day + 1 < daysInMonth && !newSchedule[nurse.id][day + 1]) {
-                    newSchedule[nurse.id][day + 1] = '明';
+                    newSchedule[nurse.id][day + 1] = akeType;
                   }
                   if (day + 2 < daysInMonth && !newSchedule[nurse.id][day + 2]) {
                     newSchedule[nurse.id][day + 2] = '休';
@@ -1024,7 +1036,7 @@ const HcuScheduleSystem = () => {
                 } else if (existingShift === '日') {
                   stats[nurse.id].dayWorkCount++;
                   stats[nurse.id].totalWork++;
-                } else if (existingShift !== '明') {
+                } else if (existingShift !== '明' && existingShift !== '管明') {
                   stats[nurse.id].totalWork++;
                 }
               }
@@ -1074,17 +1086,13 @@ const HcuScheduleSystem = () => {
             if (stats[nurse.id].nightCount >= nurseMaxNight) return false;
             // 翌日（明け用）が空いているか
             if (day + 1 < daysInMonth && newSchedule[nurse.id][day + 1] && newSchedule[nurse.id][day + 1] !== '明') return false;
-            // ★ 夜明は連続2回まで（夜明夜明OK、夜明夜明夜はNG）
-            // 前が 夜→明→(今日) の場合、さらにその前が 夜→明 なら連続2回目なのでNG
-            if (day > 0 && newSchedule[nurse.id][day - 1] === '夜') {
-              // 前日が夜 = 今日は明けのはずなので夜勤不可
+            // ★ 夜明は連続2回まで
+            if (day > 0 && (newSchedule[nurse.id][day - 1] === '夜' || newSchedule[nurse.id][day - 1] === '管夜')) {
               return false;
             }
-            if (day >= 2 && newSchedule[nurse.id][day - 1] === '明' && newSchedule[nurse.id][day - 2] === '夜') {
-              // 前々日夜→前日明→今日 = 夜明1サイクル直後
-              // さらに前が夜明なら連続2回目 → 今日は休にすべき
-              if (day >= 4 && newSchedule[nurse.id][day - 3] === '明' && newSchedule[nurse.id][day - 4] === '夜') {
-                return false; // 夜明夜明の後 → 休休が必要
+            if (day >= 2 && (newSchedule[nurse.id][day - 1] === '明' || newSchedule[nurse.id][day - 1] === '管明') && (newSchedule[nurse.id][day - 2] === '夜' || newSchedule[nurse.id][day - 2] === '管夜')) {
+              if (day >= 4 && (newSchedule[nurse.id][day - 3] === '明' || newSchedule[nurse.id][day - 3] === '管明') && (newSchedule[nurse.id][day - 4] === '夜' || newSchedule[nurse.id][day - 4] === '管夜')) {
+                return false;
               }
             }
             if (stats[nurse.id].consecutiveDays >= config.maxConsecutiveDays) return false;
@@ -1370,20 +1378,26 @@ const HcuScheduleSystem = () => {
           for (let i = 0; i < shifts.length - 1; i++) {
             if (shifts[i] === '夜') {
               if (shifts[i + 1] !== '明') score -= 100;
-              if (i + 2 < shifts.length && shifts[i + 2] !== '休' && shifts[i + 2] !== '夜') score -= 50;
+              if (i + 2 < shifts.length && shifts[i + 2] !== '休' && shifts[i + 2] !== '夜' && shifts[i + 2] !== '管夜') score -= 50;
+            }
+            if (shifts[i] === '管夜') {
+              if (shifts[i + 1] !== '管明') score -= 100;
+              if (i + 2 < shifts.length && shifts[i + 2] !== '休' && shifts[i + 2] !== '夜' && shifts[i + 2] !== '管夜') score -= 50;
             }
           }
 
-          // ★ 夜明連続3回以上のペナルティ（最重要）
+          // ★ 夜明連続3回以上のペナルティ（夜・管夜混在も含む）
+          const isNight = (s: any) => s === '夜' || s === '管夜';
+          const isAke = (s: any) => s === '明' || s === '管明';
           for (let i = 0; i < shifts.length - 4; i++) {
-            if (shifts[i] === '夜' && shifts[i+1] === '明' && shifts[i+2] === '夜' && shifts[i+3] === '明' &&
-                i + 4 < shifts.length && shifts[i+4] === '夜') {
-              score -= 1000; // 連続3回は厳禁
+            if (isNight(shifts[i]) && isAke(shifts[i+1]) && isNight(shifts[i+2]) && isAke(shifts[i+3]) &&
+                i + 4 < shifts.length && isNight(shifts[i+4])) {
+              score -= 1000;
             }
           }
           // ★ 夜明夜明の後に休休がない場合のペナルティ
           for (let i = 0; i < shifts.length - 5; i++) {
-            if (shifts[i] === '夜' && shifts[i+1] === '明' && shifts[i+2] === '夜' && shifts[i+3] === '明') {
+            if (isNight(shifts[i]) && isAke(shifts[i+1]) && isNight(shifts[i+2]) && isAke(shifts[i+3])) {
               if (i + 4 < shifts.length && shifts[i+4] !== '休') score -= 500;
               if (i + 5 < shifts.length && shifts[i+5] !== '休') score -= 500;
             }
@@ -1418,7 +1432,7 @@ const HcuScheduleSystem = () => {
           activeNurses.forEach(nurse => {
             const s = schedule[nurse.id][day];
             if (s === '日') dayStaffCount++;
-            if (s === '夜') nightStaffCount++;
+            if (s === '夜' || s === '管夜') nightStaffCount++;
           });
           const required = getDayStaffRequirement(day);
           const diff = Math.abs(dayStaffCount - required);
@@ -1458,7 +1472,7 @@ const HcuScheduleSystem = () => {
         const nightRequired = getNightRequirement(day);
         let nightCount = 0;
         activeNurses.forEach(nurse => {
-          if (adjustedSchedule[nurse.id][day] === '夜') nightCount++;
+          if (adjustedSchedule[nurse.id][day] === '夜' || adjustedSchedule[nurse.id][day] === '管夜') nightCount++;
         });
 
         // 夜勤不足の場合：追加割り当て
@@ -1468,21 +1482,21 @@ const HcuScheduleSystem = () => {
           // 夜勤可能な候補を探す（日勤・休み・空きの人）
           const candidates2 = activeNurses.filter(nurse => {
             const s = adjustedSchedule[nurse.id][day];
-            if (s === '夜' || s === '明') return false; // 既に夜勤 or 明け
-            // 前日が夜勤の人はダメ
-            if (day > 0 && adjustedSchedule[nurse.id][day - 1] === '夜') return false;
-            // 翌日が既に夜の人はダメ
-            if (day + 1 < daysInMonth && adjustedSchedule[nurse.id][day + 1] === '夜') return false;
+            if (s === '夜' || s === '明' || s === '管夜' || s === '管明') return false;
+            // 前日が夜勤系の人はダメ
+            if (day > 0 && (adjustedSchedule[nurse.id][day - 1] === '夜' || adjustedSchedule[nurse.id][day - 1] === '管夜')) return false;
+            // 翌日が既に夜勤系の人はダメ
+            if (day + 1 < daysInMonth && (adjustedSchedule[nurse.id][day + 1] === '夜' || adjustedSchedule[nurse.id][day + 1] === '管夜')) return false;
             // 夜勤なし設定
             const pref = nurseShiftPrefs[nurse.id];
             if (pref?.noNightShift) return false;
             // ★ 職員別夜勤上限（厳格制約）
             const nurseMaxNight = pref?.maxNightShifts ?? generateConfig.maxNightShifts;
-            const currentNightCount = adjustedSchedule[nurse.id].filter((s: any) => s === '夜').length;
+            const currentNightCount = adjustedSchedule[nurse.id].filter((s: any) => s === '夜' || s === '管夜').length;
             if (currentNightCount >= nurseMaxNight) return false;
             // ★ 夜明は連続2回まで
-            if (day >= 2 && adjustedSchedule[nurse.id][day - 1] === '明' && adjustedSchedule[nurse.id][day - 2] === '夜') {
-              if (day >= 4 && adjustedSchedule[nurse.id][day - 3] === '明' && adjustedSchedule[nurse.id][day - 4] === '夜') {
+            if (day >= 2 && (adjustedSchedule[nurse.id][day - 1] === '明' || adjustedSchedule[nurse.id][day - 1] === '管明') && (adjustedSchedule[nurse.id][day - 2] === '夜' || adjustedSchedule[nurse.id][day - 2] === '管夜')) {
+              if (day >= 4 && (adjustedSchedule[nurse.id][day - 3] === '明' || adjustedSchedule[nurse.id][day - 3] === '管明') && (adjustedSchedule[nurse.id][day - 4] === '夜' || adjustedSchedule[nurse.id][day - 4] === '管夜')) {
                 return false; // 夜明夜明の後は休休
               }
             }
@@ -1492,8 +1506,8 @@ const HcuScheduleSystem = () => {
 
           // 夜勤回数が少ない順に割り当て
           candidates2.sort((a, b) => {
-            const aN = adjustedSchedule[a.id].filter((s: any) => s === '夜').length;
-            const bN = adjustedSchedule[b.id].filter((s: any) => s === '夜').length;
+            const aN = adjustedSchedule[a.id].filter((s: any) => s === '夜' || s === '管夜').length;
+            const bN = adjustedSchedule[b.id].filter((s: any) => s === '夜' || s === '管夜').length;
             return aN - bN;
           });
 
@@ -1504,20 +1518,20 @@ const HcuScheduleSystem = () => {
             adjustedSchedule[picked.id][day + 1] = '明';
           }
           // 翌々日休み
-          if (day + 2 < daysInMonth && adjustedSchedule[picked.id][day + 2] !== '夜') {
+          if (day + 2 < daysInMonth && adjustedSchedule[picked.id][day + 2] !== '夜' && adjustedSchedule[picked.id][day + 2] !== '管夜') {
             adjustedSchedule[picked.id][day + 2] = '休';
           }
           nightCount++;
         }
 
-        // 夜勤過剰の場合：余分を日勤に変換
+        // 夜勤過剰の場合：余分を日勤に変換（管夜は手動設定なので除外）
         while (nightCount > nightRequired) {
           const nightNurses = activeNurses.filter(nurse => adjustedSchedule[nurse.id][day] === '夜');
           if (nightNurses.length === 0) break;
           // 夜勤回数が多い人から削除
           nightNurses.sort((a, b) => {
-            const aN = adjustedSchedule[a.id].filter((s: any) => s === '夜').length;
-            const bN = adjustedSchedule[b.id].filter((s: any) => s === '夜').length;
+            const aN = adjustedSchedule[a.id].filter((s: any) => s === '夜' || s === '管夜').length;
+            const bN = adjustedSchedule[b.id].filter((s: any) => s === '夜' || s === '管夜').length;
             return bN - aN;
           });
           const removed = nightNurses[0];
@@ -1541,16 +1555,26 @@ const HcuScheduleSystem = () => {
             if (d + 1 < daysInMonth && adjustedSchedule[nurse.id][d + 1] !== '明') {
               adjustedSchedule[nurse.id][d + 1] = '明';
             }
-            if (d + 2 < daysInMonth && adjustedSchedule[nurse.id][d + 2] !== '夜' && adjustedSchedule[nurse.id][d + 2] !== '明') {
+            if (d + 2 < daysInMonth && adjustedSchedule[nurse.id][d + 2] !== '夜' && adjustedSchedule[nurse.id][d + 2] !== '明' && adjustedSchedule[nurse.id][d + 2] !== '管夜' && adjustedSchedule[nurse.id][d + 2] !== '管明') {
+              adjustedSchedule[nurse.id][d + 2] = '休';
+            }
+          }
+          // 管夜→管明→休も同様
+          if (adjustedSchedule[nurse.id][d] === '管夜') {
+            if (d + 1 < daysInMonth && adjustedSchedule[nurse.id][d + 1] !== '管明') {
+              adjustedSchedule[nurse.id][d + 1] = '管明';
+            }
+            if (d + 2 < daysInMonth && adjustedSchedule[nurse.id][d + 2] !== '夜' && adjustedSchedule[nurse.id][d + 2] !== '明' && adjustedSchedule[nurse.id][d + 2] !== '管夜' && adjustedSchedule[nurse.id][d + 2] !== '管明') {
               adjustedSchedule[nurse.id][d + 2] = '休';
             }
           }
         }
-        // ★★★ 夜明夜明の後は必ず休休 ★★★
+        // ★★★ 夜明夜明の後は必ず休休（夜・管夜混在含む）★★★
+        const isN = (s: any) => s === '夜' || s === '管夜';
+        const isA = (s: any) => s === '明' || s === '管明';
         for (let d = 0; d < daysInMonth - 5; d++) {
-          if (adjustedSchedule[nurse.id][d] === '夜' && adjustedSchedule[nurse.id][d + 1] === '明' &&
-              adjustedSchedule[nurse.id][d + 2] === '夜' && adjustedSchedule[nurse.id][d + 3] === '明') {
-            // d+4, d+5 を休にする
+          if (isN(adjustedSchedule[nurse.id][d]) && isA(adjustedSchedule[nurse.id][d + 1]) &&
+              isN(adjustedSchedule[nurse.id][d + 2]) && isA(adjustedSchedule[nurse.id][d + 3])) {
             if (d + 4 < daysInMonth && adjustedSchedule[nurse.id][d + 4] !== '休') {
               adjustedSchedule[nurse.id][d + 4] = '休';
             }
@@ -1559,13 +1583,13 @@ const HcuScheduleSystem = () => {
             }
           }
         }
-        // ★★★ 夜明は連続3回以上を禁止（夜明夜明夜→夜を日に変換） ★★★
+        // ★★★ 夜明は連続3回以上を禁止 ★★★
         for (let d = 0; d < daysInMonth - 4; d++) {
-          if (adjustedSchedule[nurse.id][d] === '夜' && adjustedSchedule[nurse.id][d + 1] === '明' &&
-              adjustedSchedule[nurse.id][d + 2] === '夜' && adjustedSchedule[nurse.id][d + 3] === '明' &&
-              d + 4 < daysInMonth && adjustedSchedule[nurse.id][d + 4] === '夜') {
-            adjustedSchedule[nurse.id][d + 4] = '休'; // 3回目の夜を休に変換
-            if (d + 5 < daysInMonth && adjustedSchedule[nurse.id][d + 5] === '明') {
+          if (isN(adjustedSchedule[nurse.id][d]) && isA(adjustedSchedule[nurse.id][d + 1]) &&
+              isN(adjustedSchedule[nurse.id][d + 2]) && isA(adjustedSchedule[nurse.id][d + 3]) &&
+              d + 4 < daysInMonth && isN(adjustedSchedule[nurse.id][d + 4])) {
+            adjustedSchedule[nurse.id][d + 4] = '休';
+            if (d + 5 < daysInMonth && isA(adjustedSchedule[nurse.id][d + 5])) {
               adjustedSchedule[nurse.id][d + 5] = '休';
             }
           }
@@ -1573,14 +1597,13 @@ const HcuScheduleSystem = () => {
         // ★★★ 職員別夜勤上限の厳格適用 ★★★
         const pref = nurseShiftPrefs[nurse.id];
         const maxN = pref?.noNightShift ? 0 : (pref?.maxNightShifts ?? generateConfig.maxNightShifts);
-        let nightCount = adjustedSchedule[nurse.id].filter((s: any) => s === '夜').length;
-        // 上限超過の場合、末日側から夜勤を削除
+        let nightCount = adjustedSchedule[nurse.id].filter((s: any) => s === '夜' || s === '管夜').length;
+        // 上限超過の場合、末日側から夜勤を削除（管夜は手動設定なので夜のみ削除）
         if (nightCount > maxN) {
           for (let d = daysInMonth - 1; d >= 0 && nightCount > maxN; d--) {
             if (adjustedSchedule[nurse.id][d] === '夜') {
-              // 希望で夜勤の場合はスキップ
               const reqVal = existingRequests[nurse.id]?.[d];
-              if (reqVal === '夜') continue;
+              if (reqVal === '夜' || reqVal === '管夜') continue;
               adjustedSchedule[nurse.id][d] = '日';
               if (d + 1 < daysInMonth && adjustedSchedule[nurse.id][d + 1] === '明') {
                 adjustedSchedule[nurse.id][d + 1] = '日';
@@ -1714,11 +1737,11 @@ const HcuScheduleSystem = () => {
       const monthRequests = { ...(prev[monthKey] || {}) };
       const nurseRequests = { ...(monthRequests[nurseIdKey] || {}) };
 
-      // ★ 最新stateから現在値を取得（クロージャの古い値を使わない）
+      // ★ 最新stateから現在値を取得
       const currentRequest = nurseRequests[day] || null;
 
-      // サイクル: 空→休→有→前→後→日→夜→空
-      // 「明」はクリック→休に変更
+      // サイクル: 空→休→有→前→後→日→夜→管夜→空
+      // 「明」「管明」はクリック→休に変更
       let newValue: string | null;
       if (!currentRequest) newValue = '休';
       else if (currentRequest === '休') newValue = '有';
@@ -1726,19 +1749,20 @@ const HcuScheduleSystem = () => {
       else if (currentRequest === '前') newValue = '後';
       else if (currentRequest === '後') newValue = '日';
       else if (currentRequest === '日') newValue = '夜';
-      else if (currentRequest === '明') newValue = '休';
-      else newValue = null; // 夜 or その他→クリア
+      else if (currentRequest === '夜') newValue = '管夜';
+      else if (currentRequest === '明' || currentRequest === '管明') newValue = '休';
+      else newValue = null; // 管夜 or その他→クリア
 
-      // ① 「夜」解除時 → 自動セットした明・休のみクリア
-      if (currentRequest === '夜') {
-        if (day + 1 <= days && nurseRequests[day + 1] === '明') {
+      // ① 「夜」or「管夜」解除時 → 自動セットした明系・休のみクリア
+      if (currentRequest === '夜' || currentRequest === '管夜') {
+        const akeType = currentRequest === '夜' ? '明' : '管明';
+        if (day + 1 <= days && nurseRequests[day + 1] === akeType) {
           delete nurseRequests[day + 1];
           dbChanges[day + 1] = null;
         }
         if (day + 2 <= days && nurseRequests[day + 2] === '休') {
-          // 別の夜勤由来の休でないか確認
           const d2 = day + 2;
-          const otherNightBefore = d2 >= 2 && nurseRequests[d2 - 2] === '夜' && (d2 - 2) !== day;
+          const otherNightBefore = d2 >= 2 && (nurseRequests[d2 - 2] === '夜' || nurseRequests[d2 - 2] === '管夜') && (d2 - 2) !== day;
           if (!otherNightBefore) {
             delete nurseRequests[day + 2];
             dbChanges[day + 2] = null;
@@ -1754,11 +1778,12 @@ const HcuScheduleSystem = () => {
       }
       dbChanges[day] = newValue;
 
-      // ③ 新しく「夜」→ 翌日・翌々日が空の場合のみ自動セット
-      if (newValue === '夜') {
+      // ③ 新しく「夜」or「管夜」→ 翌日・翌々日が空の場合のみ自動セット
+      if (newValue === '夜' || newValue === '管夜') {
+        const akeType = newValue === '夜' ? '明' : '管明';
         if (day + 1 <= days && !nurseRequests[day + 1]) {
-          nurseRequests[day + 1] = '明';
-          dbChanges[day + 1] = '明';
+          nurseRequests[day + 1] = akeType;
+          dbChanges[day + 1] = akeType;
         }
         if (day + 2 <= days && !nurseRequests[day + 2]) {
           nurseRequests[day + 2] = '休';
@@ -2558,9 +2583,9 @@ const HcuScheduleSystem = () => {
           {/* 操作説明 */}
           <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 mb-6">
             <p className="text-sm text-emerald-800">
-              <strong>操作方法：</strong>日付をタップすると「公休」→「有休」→「午前半休」→「午後半休」→「日勤」→「夜勤」→「クリア」と切り替わります。
+              <strong>操作方法：</strong>日付をタップすると「公休」→「有休」→「午前半休」→「午後半休」→「日勤」→「夜勤」→「管理夜勤」→「クリア」と切り替わります。
               <br />
-              <span className="text-purple-600">「夜勤」を選択すると翌日が自動で「夜明」、翌々日が「公休」になります。</span>
+              <span className="text-purple-600">「夜勤」「管理夜勤」を選択すると翌日が自動で「夜明」「管明」、翌々日が「公休」になります。</span>
               <br />
               <span className="text-emerald-600">休:2 有:1</span> などは他の職員の希望数です。
               <br />
@@ -2609,6 +2634,7 @@ const HcuScheduleSystem = () => {
                       className={`w-full aspect-square rounded-xl border-2 transition-all flex flex-col items-center justify-center ${
                         isLocked
                           ? prevCon === '明' ? 'bg-pink-100 border-pink-300 cursor-not-allowed opacity-80'
+                          : prevCon === '管明' ? 'bg-cyan-100 border-cyan-300 cursor-not-allowed opacity-80'
                           : 'bg-gray-200 border-gray-400 cursor-not-allowed opacity-80'
                           : request === '休'
                           ? 'bg-gray-200 border-gray-400 shadow-inner'
@@ -2624,6 +2650,10 @@ const HcuScheduleSystem = () => {
                           ? 'bg-purple-200 border-purple-400 shadow-inner'
                           : request === '明'
                           ? 'bg-pink-200 border-pink-400 shadow-inner'
+                          : request === '管夜'
+                          ? 'bg-teal-200 border-teal-400 shadow-inner'
+                          : request === '管明'
+                          ? 'bg-cyan-200 border-cyan-400 shadow-inner'
                           : isHoliday
                           ? 'bg-red-50 border-red-100 hover:border-red-300'
                           : 'bg-white border-gray-200 hover:border-emerald-300 hover:shadow'
@@ -2635,8 +2665,8 @@ const HcuScheduleSystem = () => {
                         {day}
                       </span>
                       {isLocked ? (
-                        <span className={`text-xs font-bold ${prevCon === '明' ? 'text-pink-600' : 'text-gray-600'}`}>
-                          {prevCon === '明' ? '夜明' : '公休'}
+                        <span className={`text-xs font-bold ${prevCon === '明' ? 'text-pink-600' : prevCon === '管明' ? 'text-cyan-600' : 'text-gray-600'}`}>
+                          {prevCon === '明' ? '夜明' : prevCon === '管明' ? '管明' : '公休'}
                         </span>
                       ) : request ? (
                         <span className={`text-xs font-bold ${
@@ -2646,9 +2676,11 @@ const HcuScheduleSystem = () => {
                           request === '後' ? 'text-amber-700' :
                           request === '日' ? 'text-blue-700' :
                           request === '夜' ? 'text-purple-700' :
-                          request === '明' ? 'text-pink-700' : ''
+                          request === '明' ? 'text-pink-700' :
+                          request === '管夜' ? 'text-teal-700' :
+                          request === '管明' ? 'text-cyan-700' : ''
                         }`}>
-                          {request === '休' ? '公休' : request === '有' ? '有休' : request === '前' ? '午前半休' : request === '後' ? '午後半休' : request === '日' ? '日勤' : request === '夜' ? '夜勤' : request === '明' ? '夜明' : request}
+                          {request === '休' ? '公休' : request === '有' ? '有休' : request === '前' ? '午前半休' : request === '後' ? '午後半休' : request === '日' ? '日勤' : request === '夜' ? '夜勤' : request === '明' ? '夜明' : request === '管夜' ? '管夜' : request === '管明' ? '管明' : request}
                         </span>
                       ) : null}
                       {isLocked && (
@@ -3079,9 +3111,9 @@ const HcuScheduleSystem = () => {
           //     バックアップあり（手動設定した夜）→ 元の値に復元
           //     バックアップなし（自動生成/DB由来の夜）→ 翌日・翌々日はそのまま変更しない
           const handleCellClick = (nurseId: any, dayIndex: number, currentShift: string | null) => {
-            const CYCLE = ['日', '夜', '休', '有', null];
+            const CYCLE = ['日', '夜', '管夜', '休', '有', null];
             const currentIdx = currentShift ? CYCLE.indexOf(currentShift) : -1;
-            const nextIdx = (currentShift === '明') ? CYCLE.indexOf('休') : (currentIdx >= 0 ? (currentIdx + 1) % CYCLE.length : 0);
+            const nextIdx = (currentShift === '明' || currentShift === '管明') ? CYCLE.indexOf('休') : (currentIdx >= 0 ? (currentIdx + 1) % CYCLE.length : 0);
             const newShift = CYCLE[nextIdx];
             const bk = nightBackupRef.current;
 
@@ -3089,11 +3121,10 @@ const HcuScheduleSystem = () => {
               const newData = JSON.parse(JSON.stringify(data));
               if (!newData[nurseId]) newData[nurseId] = new Array(daysInMonth).fill(null);
               
-              // ① 「夜」から別のシフトに変更 → バックアップがあれば復元
-              if (currentShift === '夜' && newShift !== '夜') {
+              // ① 「夜」or「管夜」から別のシフトに変更 → バックアップがあれば復元
+              if ((currentShift === '夜' || currentShift === '管夜') && newShift !== currentShift) {
                 const key1 = `${nurseId}-${dayIndex + 1}`;
                 const key2 = `${nurseId}-${dayIndex + 2}`;
-                // バックアップが存在する場合のみ復元（手動で夜にした場合）
                 if (key1 in bk) {
                   if (dayIndex + 1 < daysInMonth) {
                     newData[nurseId][dayIndex + 1] = bk[key1];
@@ -3108,35 +3139,31 @@ const HcuScheduleSystem = () => {
                   }
                   delete bk[key2];
                 }
-                // バックアップがない場合（自動生成/DB由来）→ 翌日・翌々日はそのまま
               }
               
               // ② クリックしたセルの値を更新
               newData[nurseId][dayIndex] = newShift;
               
-              // ③ 新しいシフトが「夜」→ 翌日・翌々日が空の場合のみバックアップ＆上書き
-              if (newShift === '夜') {
+              // ③ 新しいシフトが「夜」or「管夜」→ 翌日・翌々日が空の場合のみ自動セット
+              if (newShift === '夜' || newShift === '管夜') {
+                const akeType = newShift === '夜' ? '明' : '管明';
                 if (dayIndex + 1 < daysInMonth) {
                   const key1 = `${nurseId}-${dayIndex + 1}`;
                   const existing1 = newData[nurseId][dayIndex + 1];
                   if (!existing1) {
-                    // 空の場合のみ：バックアップして「明」を設定
                     bk[key1] = existing1;
-                    newData[nurseId][dayIndex + 1] = '明';
-                    updateScheduleCellInDB(nurseId, targetYear, targetMonth, dayIndex + 2, '明');
+                    newData[nurseId][dayIndex + 1] = akeType;
+                    updateScheduleCellInDB(nurseId, targetYear, targetMonth, dayIndex + 2, akeType);
                   }
-                  // 既に値がある場合は何もしない（上書きしない）
                 }
                 if (dayIndex + 2 < daysInMonth) {
                   const key2 = `${nurseId}-${dayIndex + 2}`;
                   const existing2 = newData[nurseId][dayIndex + 2];
                   if (!existing2) {
-                    // 空の場合のみ：バックアップして「休」を設定
                     bk[key2] = existing2;
                     newData[nurseId][dayIndex + 2] = '休';
                     updateScheduleCellInDB(nurseId, targetYear, targetMonth, dayIndex + 3, '休');
                   }
-                  // 既に値がある場合は何もしない（上書きしない）
                 }
               }
               
@@ -3258,10 +3285,10 @@ const HcuScheduleSystem = () => {
                   {activeNurses.map((nurse, nIdx) => {
                     const shifts = scheduleDisplayData[nurse.id] || [];
                     const stats = {
-                      night: shifts.filter(s => s === '夜').length,
+                      night: shifts.filter(s => s === '夜' || s === '管夜').length,
                       day: shifts.filter(s => s === '日').length,
-                      off: shifts.filter(s => s === '休' || s === '有' || s === '明').length,
-                      work: shifts.filter(s => s && s !== '休' && s !== '有' && s !== '明').length
+                      off: shifts.filter(s => s === '休' || s === '有' || s === '明' || s === '管明').length,
+                      work: shifts.filter(s => s && s !== '休' && s !== '有' && s !== '明' && s !== '管明').length
                     };
                     
                     return (
@@ -3324,7 +3351,7 @@ const HcuScheduleSystem = () => {
                       let count = 0;
                       activeNurses.forEach(nurse => {
                         const shift = (scheduleDisplayData[nurse.id] || [])[i];
-                        if (shift === '夜') count++;
+                        if (shift === '夜' || shift === '管夜') count++;
                       });
                       return (
                         <td key={i} className={`border text-center text-purple-700 ${isMaximized ? 'p-0 text-[10px]' : 'p-1'} ${count < 2 ? 'bg-red-200 text-red-700' : count > 3 ? 'bg-yellow-200 text-yellow-700' : ''}`}>
@@ -3340,7 +3367,7 @@ const HcuScheduleSystem = () => {
                       let count = 0;
                       activeNurses.forEach(nurse => {
                         const shift = (scheduleDisplayData[nurse.id] || [])[i];
-                        if (shift === '明') count++;
+                        if (shift === '明' || shift === '管明') count++;
                       });
                       return (
                         <td key={i} className={`border text-center text-pink-700 ${isMaximized ? 'p-0 text-[10px]' : 'p-1'}`}>
@@ -3420,7 +3447,7 @@ const HcuScheduleSystem = () => {
                     let total = 0;
                     activeNurses.forEach(nurse => {
                       const shifts = scheduleDisplayData[nurse.id] || [];
-                      total += shifts.filter(s => s === '夜').length;
+                      total += shifts.filter(s => s === '夜' || s === '管夜').length;
                     });
                     return total;
                   })()}
@@ -3445,7 +3472,7 @@ const HcuScheduleSystem = () => {
                   {(() => {
                     const nightCounts = activeNurses.map(nurse => {
                       const shifts = scheduleDisplayData[nurse.id] || [];
-                      return shifts.filter(s => s === '夜').length;
+                      return shifts.filter(s => s === '夜' || s === '管夜').length;
                     });
                     return `${Math.min(...nightCounts)}〜${Math.max(...nightCounts)}`;
                   })()}
@@ -3502,7 +3529,7 @@ const HcuScheduleSystem = () => {
                     for (let d = w.start - 1; d < w.end; d++) {
                       activeNurses.forEach(nurse => {
                         const shift = (scheduleDisplayData[nurse.id] || [])[d];
-                        if (shift === '夜') totalNightShifts++;
+                        if (shift === '夜' || shift === '管夜') totalNightShifts++;
                       });
                       daysCovered++;
                     }
@@ -3545,12 +3572,12 @@ const HcuScheduleSystem = () => {
                     {activeNurses.map(nurse => {
                       const shifts = scheduleDisplayData[nurse.id] || [];
                       const stats = {
-                        night: shifts.filter(s => s === '夜').length,
+                        night: shifts.filter(s => s === '夜' || s === '管夜').length,
                         day: shifts.filter(s => s === '日').length,
-                        ake: shifts.filter(s => s === '明').length,
+                        ake: shifts.filter(s => s === '明' || s === '管明').length,
                         off: shifts.filter(s => s === '休').length,
                         paid: shifts.filter(s => s === '有').length,
-                        work: shifts.filter(s => s && s !== '休' && s !== '有' && s !== '明').length,
+                        work: shifts.filter(s => s && s !== '休' && s !== '有' && s !== '明' && s !== '管明').length,
                         weekend: 0
                       };
                       
@@ -3589,12 +3616,12 @@ const HcuScheduleSystem = () => {
                         let totals = { night: 0, day: 0, ake: 0, off: 0, paid: 0, work: 0, weekend: 0 };
                         activeNurses.forEach(nurse => {
                           const shifts = scheduleDisplayData[nurse.id] || [];
-                          totals.night += shifts.filter(s => s === '夜').length;
+                          totals.night += shifts.filter(s => s === '夜' || s === '管夜').length;
                           totals.day += shifts.filter(s => s === '日').length;
-                          totals.ake += shifts.filter(s => s === '明').length;
+                          totals.ake += shifts.filter(s => s === '明' || s === '管明').length;
                           totals.off += shifts.filter(s => s === '休').length;
                           totals.paid += shifts.filter(s => s === '有').length;
-                          totals.work += shifts.filter(s => s && s !== '休' && s !== '有' && s !== '明').length;
+                          totals.work += shifts.filter(s => s && s !== '休' && s !== '有' && s !== '明' && s !== '管明').length;
                           shifts.forEach((shift, i) => {
                             if (shift && shift !== '休' && shift !== '有' && shift !== '明') {
                               const dow = getDayOfWeek(targetYear, targetMonth, i + 1);
@@ -3623,12 +3650,12 @@ const HcuScheduleSystem = () => {
                         let totals = { night: 0, day: 0, ake: 0, off: 0, paid: 0, work: 0, weekend: 0 };
                         activeNurses.forEach(nurse => {
                           const shifts = scheduleDisplayData[nurse.id] || [];
-                          totals.night += shifts.filter(s => s === '夜').length;
+                          totals.night += shifts.filter(s => s === '夜' || s === '管夜').length;
                           totals.day += shifts.filter(s => s === '日').length;
-                          totals.ake += shifts.filter(s => s === '明').length;
+                          totals.ake += shifts.filter(s => s === '明' || s === '管明').length;
                           totals.off += shifts.filter(s => s === '休').length;
                           totals.paid += shifts.filter(s => s === '有').length;
-                          totals.work += shifts.filter(s => s && s !== '休' && s !== '有' && s !== '明').length;
+                          totals.work += shifts.filter(s => s && s !== '休' && s !== '有' && s !== '明' && s !== '管明').length;
                           shifts.forEach((shift, i) => {
                             if (shift && shift !== '休' && shift !== '有' && shift !== '明') {
                               const dow = getDayOfWeek(targetYear, targetMonth, i + 1);
@@ -3974,6 +4001,8 @@ const HcuScheduleSystem = () => {
                                 req === '日' ? 'bg-blue-100' :
                                 req === '夜' ? 'bg-purple-100' :
                                 req === '明' ? 'bg-pink-100' :
+                                req === '管夜' ? 'bg-teal-100' :
+                                req === '管明' ? 'bg-cyan-100' :
                                 con ? 'bg-orange-50' : ''
                               }`}>
                                 {req && <div className="font-medium text-xs">{req}</div>}
@@ -4623,10 +4652,16 @@ const HcuScheduleSystem = () => {
                                 if (thirdLastShift === '夜' && secondLastShift === '明') {
                                   constraints[2] = '休';
                                 }
-                              } else if (lastShift === '明') {
+                              } else if (lastShift === '管夜') {
+                                constraints[0] = '管明';
+                                constraints[1] = '休';
+                                if ((thirdLastShift === '夜' || thirdLastShift === '管夜') && (secondLastShift === '明' || secondLastShift === '管明')) {
+                                  constraints[2] = '休';
+                                }
+                              } else if (lastShift === '明' || lastShift === '管明') {
                                 constraints[0] = '休';
-                                if (secondLastShift === '夜' && shifts.length >= 4 && 
-                                    shifts[shifts.length - 4] === '夜' && shifts[shifts.length - 3] === '明') {
+                                if ((secondLastShift === '夜' || secondLastShift === '管夜') && shifts.length >= 4 && 
+                                    (shifts[shifts.length - 4] === '夜' || shifts[shifts.length - 4] === '管夜') && (shifts[shifts.length - 3] === '明' || shifts[shifts.length - 3] === '管明')) {
                                   constraints[1] = '休';
                                 }
                               }
@@ -4635,7 +4670,7 @@ const HcuScheduleSystem = () => {
                               let consecutiveWork = 0;
                               for (let i = shifts.length - 1; i >= 0; i--) {
                                 const s = shifts[i];
-                                if (s && s !== '休' && s !== '有' && s !== '明') {
+                                if (s && s !== '休' && s !== '有' && s !== '明' && s !== '管明') {
                                   consecutiveWork++;
                                 } else {
                                   break;
@@ -4672,6 +4707,8 @@ const HcuScheduleSystem = () => {
                                   <td key={i} className={`border p-1 text-center ${
                                     shift === '夜' ? 'bg-purple-100 text-purple-800' :
                                     shift === '明' ? 'bg-pink-100 text-pink-800' :
+                                    shift === '管夜' ? 'bg-teal-100 text-teal-800' :
+                                    shift === '管明' ? 'bg-cyan-100 text-cyan-800' :
                                     shift === '休' || shift === '有' ? 'bg-gray-300' :
                                     shift === '日' ? 'bg-blue-50 text-blue-800' : ''
                                   }`}>
@@ -4680,6 +4717,7 @@ const HcuScheduleSystem = () => {
                                 ))}
                                 <td className={`border p-1 text-center font-bold bg-orange-50 ${
                                   constraints[0] === '明' ? 'text-pink-600' :
+                                  constraints[0] === '管明' ? 'text-cyan-600' :
                                   constraints[0] === '休' ? 'text-gray-600' : ''
                                 }`}>
                                   {constraints[0] || '-'}
@@ -4766,6 +4804,8 @@ const HcuScheduleSystem = () => {
                                   <td key={i} className={`border p-1 text-center ${
                                     shift === '夜' ? 'bg-purple-100 text-purple-800' :
                                     shift === '明' ? 'bg-pink-100 text-pink-800' :
+                                    shift === '管夜' ? 'bg-teal-100 text-teal-800' :
+                                    shift === '管明' ? 'bg-cyan-100 text-cyan-800' :
                                     shift === '休' || shift === '有' ? 'bg-gray-300' :
                                     shift === '日' ? 'bg-blue-50 text-blue-800' : ''
                                   }`}>
@@ -4774,6 +4814,7 @@ const HcuScheduleSystem = () => {
                                 ))}
                                 <td className={`border p-1 text-center font-bold bg-orange-50 ${
                                   constraints[1] === '明' ? 'text-pink-600' :
+                                  constraints[1] === '管明' ? 'text-cyan-600' :
                                   constraints[1] === '休' ? 'text-gray-600' : ''
                                 }`}>
                                   {constraints[1] || '-'}
