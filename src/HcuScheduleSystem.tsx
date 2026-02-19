@@ -1538,16 +1538,21 @@ const HcuScheduleSystem = () => {
           const nightDiff = Math.abs(stat.nightCount - targetNights);
           score -= nightDiff * nightDiff * 4;
           
-          // 夜勤後の夜勤明け・休みチェック
+          // 夜勤後の夜勤明け・休みチェック（絶対制約）
           for (let i = 0; i < shifts.length - 1; i++) {
             if (shifts[i] === '夜') {
-              if (shifts[i + 1] !== '明') score -= 100;
+              if (shifts[i + 1] !== '明') score -= 2000;
               if (i + 2 < shifts.length && shifts[i + 2] !== '休' && shifts[i + 2] !== '夜' && shifts[i + 2] !== '管夜') score -= 50;
             }
             if (shifts[i] === '管夜') {
-              if (shifts[i + 1] !== '管明') score -= 100;
+              if (shifts[i + 1] !== '管明') score -= 2000;
               if (i + 2 < shifts.length && shifts[i + 2] !== '休' && shifts[i + 2] !== '夜' && shifts[i + 2] !== '管夜') score -= 50;
             }
+          }
+          // 孤立した「明」「管明」のペナルティ（「夜」なしに「明」が存在）
+          for (let i = 0; i < shifts.length; i++) {
+            if (shifts[i] === '明' && (i === 0 || shifts[i - 1] !== '夜')) score -= 2000;
+            if (shifts[i] === '管明' && (i === 0 || shifts[i - 1] !== '管夜')) score -= 2000;
           }
 
           // ★ 夜明連続3回以上のペナルティ（夜・管夜混在も含む）
@@ -1605,14 +1610,12 @@ const HcuScheduleSystem = () => {
             score -= dayStaffCount < required ? diff * diff * 80 : diff * diff * 15;
           }
 
-          // ★★★ 日別夜勤人数ペナルティ（最重要）★★★
+          // ★★★ 日別夜勤人数ペナルティ（絶対制約）★★★
           const nightRequired = getNightRequirement(day);
           const nightDiffDaily = nightStaffCount - nightRequired;
           if (nightDiffDaily !== 0) {
-            // 不足は極めて重いペナルティ、過剰も重い
-            score -= nightStaffCount < nightRequired
-              ? Math.abs(nightDiffDaily) * 500
-              : Math.abs(nightDiffDaily) * 300;
+            // 不足・過剰とも極めて重いペナルティ（絶対制約として扱う）
+            score -= Math.abs(nightDiffDaily) * 2000;
           }
         }
         
@@ -1781,11 +1784,147 @@ const HcuScheduleSystem = () => {
         }
       });
 
+      // ★★★ 改修2: 孤立した「明」「管明」の除去 ★★★
+      // 前の日が「夜」でない「明」、前の日が「管夜」でない「管明」を休みに変換
+      activeNurses.forEach(nurse => {
+        for (let d = 0; d < daysInMonth; d++) {
+          if (adjustedSchedule[nurse.id][d] === '明') {
+            if (d === 0 || adjustedSchedule[nurse.id][d - 1] !== '夜') {
+              adjustedSchedule[nurse.id][d] = '休';
+            }
+          }
+          if (adjustedSchedule[nurse.id][d] === '管明') {
+            if (d === 0 || adjustedSchedule[nurse.id][d - 1] !== '管夜') {
+              adjustedSchedule[nurse.id][d] = '休';
+            }
+          }
+        }
+      });
+
+      // ★★★ 改修1: 夜勤人数の最終強制調整（全ての個人制約適用後に再実行）★★★
+      for (let day = 0; day < daysInMonth; day++) {
+        const nightRequired = getNightRequirement(day);
+        let nightCount = 0;
+        activeNurses.forEach(nurse => {
+          if (adjustedSchedule[nurse.id][day] === '夜' || adjustedSchedule[nurse.id][day] === '管夜') nightCount++;
+        });
+
+        // 夜勤不足の場合：追加割り当て
+        let retries = 0;
+        while (nightCount < nightRequired && retries < 20) {
+          retries++;
+          const candidates3 = activeNurses.filter(nurse => {
+            const s = adjustedSchedule[nurse.id][day];
+            if (s === '夜' || s === '明' || s === '管夜' || s === '管明') return false;
+            if (day > 0 && (adjustedSchedule[nurse.id][day - 1] === '夜' || adjustedSchedule[nurse.id][day - 1] === '管夜')) return false;
+            if (day + 1 < daysInMonth && (adjustedSchedule[nurse.id][day + 1] === '夜' || adjustedSchedule[nurse.id][day + 1] === '管夜')) return false;
+            const pref = nurseShiftPrefs[nurse.id];
+            if (pref?.noNightShift) return false;
+            const nurseMaxNight = pref?.maxNightShifts ?? generateConfig.maxNightShifts;
+            const currentN = adjustedSchedule[nurse.id].filter((s2: any) => s2 === '夜' || s2 === '管夜').length;
+            if (currentN >= nurseMaxNight) return false;
+            // 夜明連続2回制限
+            if (day >= 2) {
+              const isNightAt = (d2: number) => adjustedSchedule[nurse.id][d2] === '夜' || adjustedSchedule[nurse.id][d2] === '管夜';
+              const isAkeAt = (d2: number) => adjustedSchedule[nurse.id][d2] === '明' || adjustedSchedule[nurse.id][d2] === '管明';
+              if (isAkeAt(day - 1) && isNightAt(day - 2) && day >= 4 && isAkeAt(day - 3) && isNightAt(day - 4)) {
+                return false;
+              }
+            }
+            return true;
+          }).sort((a, b) => {
+            const aN = adjustedSchedule[a.id].filter((s: any) => s === '夜' || s === '管夜').length;
+            const bN = adjustedSchedule[b.id].filter((s: any) => s === '夜' || s === '管夜').length;
+            return aN - bN;
+          });
+          if (candidates3.length === 0) break;
+          const picked = candidates3[0];
+          adjustedSchedule[picked.id][day] = '夜';
+          if (day + 1 < daysInMonth) {
+            adjustedSchedule[picked.id][day + 1] = '明';
+          }
+          if (day + 2 < daysInMonth && adjustedSchedule[picked.id][day + 2] !== '夜' && adjustedSchedule[picked.id][day + 2] !== '管夜') {
+            adjustedSchedule[picked.id][day + 2] = '休';
+          }
+          nightCount++;
+        }
+
+        // 夜勤過剰の場合：余分を日勤に変換
+        while (nightCount > nightRequired) {
+          const nightNurses = activeNurses.filter(nurse => adjustedSchedule[nurse.id][day] === '夜');
+          if (nightNurses.length === 0) break;
+          nightNurses.sort((a, b) => {
+            const aN = adjustedSchedule[a.id].filter((s: any) => s === '夜' || s === '管夜').length;
+            const bN = adjustedSchedule[b.id].filter((s: any) => s === '夜' || s === '管夜').length;
+            return bN - aN;
+          });
+          const removed = nightNurses[0];
+          adjustedSchedule[removed.id][day] = '日';
+          if (day + 1 < daysInMonth && adjustedSchedule[removed.id][day + 1] === '明') {
+            adjustedSchedule[removed.id][day + 1] = '日';
+          }
+          nightCount--;
+        }
+      }
+
+      // ★★★ 最終整合性チェック: 追加された夜勤の明け・孤立明の再クリーンアップ ★★★
+      activeNurses.forEach(nurse => {
+        for (let d = 0; d < daysInMonth; d++) {
+          // 夜の翌日が明でなければ修正
+          if (adjustedSchedule[nurse.id][d] === '夜' && d + 1 < daysInMonth && adjustedSchedule[nurse.id][d + 1] !== '明') {
+            adjustedSchedule[nurse.id][d + 1] = '明';
+          }
+          if (adjustedSchedule[nurse.id][d] === '管夜' && d + 1 < daysInMonth && adjustedSchedule[nurse.id][d + 1] !== '管明') {
+            adjustedSchedule[nurse.id][d + 1] = '管明';
+          }
+          // 孤立した明/管明を除去
+          if (adjustedSchedule[nurse.id][d] === '明' && (d === 0 || adjustedSchedule[nurse.id][d - 1] !== '夜')) {
+            adjustedSchedule[nurse.id][d] = '休';
+          }
+          if (adjustedSchedule[nurse.id][d] === '管明' && (d === 0 || adjustedSchedule[nurse.id][d - 1] !== '管夜')) {
+            adjustedSchedule[nurse.id][d] = '休';
+          }
+        }
+      });
+
       // 配列形式に変換
       const finalSchedule = {};
       activeNurses.forEach(nurse => {
         finalSchedule[nurse.id] = adjustedSchedule[nurse.id];
       });
+
+      // ★★★ 夜勤人数制約の最終バリデーション（ログ出力）★★★
+      let nightViolations = 0;
+      for (let day = 0; day < daysInMonth; day++) {
+        const nightRequired = getNightRequirement(day);
+        let nightCount = 0;
+        activeNurses.forEach(nurse => {
+          if (finalSchedule[nurse.id][day] === '夜' || finalSchedule[nurse.id][day] === '管夜') nightCount++;
+        });
+        if (nightCount !== nightRequired) {
+          nightViolations++;
+          console.warn(`⚠️ ${day + 1}日: 夜勤${nightCount}人（要件${nightRequired}人）`);
+        }
+      }
+      if (nightViolations > 0) {
+        console.warn(`夜勤人数制約違反: ${nightViolations}日`);
+      } else {
+        console.log('✅ 夜勤人数制約: 全日クリア');
+      }
+
+      // 「明」孤立チェック（ログ出力）
+      let orphanAkeCount = 0;
+      activeNurses.forEach(nurse => {
+        for (let d = 0; d < daysInMonth; d++) {
+          if (adjustedSchedule[nurse.id][d] === '明' && (d === 0 || adjustedSchedule[nurse.id][d - 1] !== '夜')) orphanAkeCount++;
+          if (adjustedSchedule[nurse.id][d] === '管明' && (d === 0 || adjustedSchedule[nurse.id][d - 1] !== '管夜')) orphanAkeCount++;
+        }
+      });
+      if (orphanAkeCount > 0) {
+        console.warn(`孤立「明」: ${orphanAkeCount}件`);
+      } else {
+        console.log('✅ 明ペアチェック: 全てクリア');
+      }
 
       setSchedule({ month: monthKey, data: finalSchedule });
       // DB保存
