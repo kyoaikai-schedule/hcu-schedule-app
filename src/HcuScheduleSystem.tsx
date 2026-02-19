@@ -1117,6 +1117,10 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
       Object.entries(nr).forEach(([d, v]) => { exReqs[n.id][parseInt(d) - 1] = v as string; });
     });
 
+    // 【データ保護】生成前のスナップショットを保存
+    const exReqsSnapshot = JSON.stringify(exReqs);
+    const prevMonthSnapshot = JSON.stringify(prevMonthConstraints);
+
     // 有給多い職員
     const yukyuCnt: Record<number, number> = {};
     activeNurses.forEach(n => { yukyuCnt[n.id] = Object.values(exReqs[n.id] || {}).filter(v => v === '有').length; });
@@ -1639,15 +1643,17 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
 
     // 職員別
     let staffOk = true;
-    const staffDayCounts: { name: string; dc: number; off: number }[] = [];
+    const staffDayCounts: { name: string; dc: number; off: number; kyuCount: number; yuCount: number }[] = [];
     activeNurses.forEach(n => {
       const sh = final[n.id];
-      const off = sh.filter((s: any) => isOff(s)).length; // 休+有のみ（明は除外）
+      const kyuCount = sh.filter((s: any) => s === '休').length;
+      const yuCount = sh.filter((s: any) => s === '有').length;
+      const off = kyuCount + yuCount; // 休+有のみ（明は絶対に除外）
       const dc = sh.filter((s: any) => s === '日').length;
       const akeCount = sh.filter((s: any) => isAkeShift(s)).length;
-      staffDayCounts.push({ name: n.name, dc, off });
-      console.log(`${n.name}: 休み数${off}日（公休+有休のみ、明${akeCount}日は除外）`);
-      if (off < cfg.minDaysOff) { staffOk = false; hasViolation = true; report.push(`⚠️ ${n.name}: 休み${off}日（最低${cfg.minDaysOff}日）※明は除外`); }
+      staffDayCounts.push({ name: n.name, dc, off, kyuCount, yuCount });
+      console.log(`${n.name}: 休み数${off}日（休${kyuCount}日 + 有${yuCount}日、明${akeCount}日は除外）`);
+      if (off < cfg.minDaysOff) { staffOk = false; hasViolation = true; report.push(`⚠️ ${n.name}: 休み${off}日（休${kyuCount} + 有${yuCount}、最低${cfg.minDaysOff}日）※明は除外`); }
       let consec = 0, maxC = 0;
       for (let i = 0; i < sh.length; i++) { if (isWorkShift(sh[i])) { consec++; maxC = Math.max(maxC, consec); } else consec = 0; }
       if (maxC > cfg.maxConsec) { staffOk = false; hasViolation = true; report.push(`⚠️ ${n.name}: 最大連続勤務${maxC}日（上限${cfg.maxConsec}日）`); }
@@ -1658,9 +1664,48 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
     });
     if (staffOk) report.push('✅ 職員別制約: 全員OK');
 
+    // 【データ保護検証】希望データと前月データが変更されていないか確認
+    let dataProtectionOk = true;
+    const exReqsAfter = JSON.stringify(exReqs);
+    const prevMonthAfter = JSON.stringify(prevMonthConstraints);
+    if (exReqsSnapshot !== exReqsAfter) {
+      dataProtectionOk = false; hasViolation = true;
+      report.push('⚠️ 希望データが生成中に変更されました！');
+      console.warn('【データ保護違反】希望データが変更されました');
+      console.warn('  生成前:', exReqsSnapshot.substring(0, 200));
+      console.warn('  生成後:', exReqsAfter.substring(0, 200));
+    }
+    if (prevMonthSnapshot !== prevMonthAfter) {
+      dataProtectionOk = false; hasViolation = true;
+      report.push('⚠️ 前月データが生成中に変更されました！');
+      console.warn('【データ保護違反】前月データが変更されました');
+      console.warn('  生成前:', prevMonthSnapshot.substring(0, 200));
+      console.warn('  生成後:', prevMonthAfter.substring(0, 200));
+    }
+    if (dataProtectionOk) {
+      report.push('✅ データ保護: 希望データ・前月データ保持OK');
+      console.log('✅ データ保護検証: 希望データ・前月データは変更なし');
+    }
+
+    // 希望反映検証
+    let reqOk = true;
+    activeNurses.forEach(n => {
+      for (const [dStr, req] of Object.entries(exReqs[n.id] || {})) {
+        const d = Number(dStr);
+        if (d >= 0 && d < daysInMonth && final[n.id][d] !== req) {
+          // 夜→明の自動配置日は希望と異なっても許容
+          if (isAkeShift(final[n.id][d]) && d > 0 && isNightShift(final[n.id][d - 1])) continue;
+          if (final[n.id][d] === '休' && d > 0 && isNightShift(final[n.id][d - 1]) && d + 1 < daysInMonth) continue;
+          reqOk = false;
+          report.push(`⚠️ ${n.name}: ${d+1}日 希望「${req}」→実際「${final[n.id][d]}」`);
+        }
+      }
+    });
+    if (reqOk) report.push('✅ 希望反映: 全希望OK');
+
     // 職員別休み日数分布（明除外）
     const offValues = staffDayCounts.map(s => s.off);
-    report.push(`📊 職員別休み日数（公休+有休、明除外）: ${staffDayCounts.map(s => `${s.name}:${s.off}`).join(', ')}`);
+    report.push(`📊 職員別休み日数（休+有、明除外）: ${staffDayCounts.map(s => `${s.name}:${s.off}(休${s.kyuCount}+有${s.yuCount})`).join(', ')}`);
     report.push(`📊 休み日数 最大${Math.max(...offValues)}日 / 最小${Math.min(...offValues)}日 / 差${Math.max(...offValues) - Math.min(...offValues)}日`);
 
     // 職員別日勤日数分布
