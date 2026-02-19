@@ -132,6 +132,13 @@ const isWeekend = (year, month, day) => {
   return d.getDay() === 0 || d.getDay() === 6;
 };
 
+interface ScheduleVersion {
+  id: string;
+  version: number;
+  timestamp: string;
+  data: Record<number, (string | null)[]>;
+}
+
 // ============================================
 // メインコンポーネント
 // ============================================
@@ -231,6 +238,11 @@ const HcuScheduleSystem = () => {
   const [prevMonthRawData, setPrevMonthRawData] = useState([]); // Excelから読み込んだ生データ [{name, shifts}]
   const [prevMonthMapping, setPrevMonthMapping] = useState({}); // { nurseId: excelRowIndex } マッピング
   
+  // バージョン管理
+  const [scheduleVersions, setScheduleVersions] = useState<ScheduleVersion[]>([]);
+  const [showVersionHistory, setShowVersionHistory] = useState(false);
+  const [nextVersionNumber, setNextVersionNumber] = useState(1);
+
   // Excel読み込み用
   const [excelData, setExcelData] = useState(null);
   const [excelPreview, setExcelPreview] = useState([]);
@@ -354,6 +366,11 @@ const HcuScheduleSystem = () => {
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [hasUnsavedChanges]);
 
+  // バージョン管理: 月切り替え時にバージョンを読み込み
+  useEffect(() => {
+    loadVersionsFromLocalStorage(targetYear, targetMonth);
+  }, [targetYear, targetMonth]);
+
   // 保存ラッパー関数（保存状態管理 + LocalStorageバックアップ）
   const saveWithStatus = async (saveFn: () => Promise<void>) => {
     setSaveStatus('saving');
@@ -404,6 +421,36 @@ const HcuScheduleSystem = () => {
     }
   };
 
+  // バージョン管理: LocalStorage読み込み
+  const loadVersionsFromLocalStorage = (year: number, month: number) => {
+    try {
+      const key = `scheduleVersions-HCU-${year}-${month}`;
+      const data = localStorage.getItem(key);
+      if (data) {
+        const parsed = JSON.parse(data);
+        setScheduleVersions(parsed.versions || []);
+        setNextVersionNumber(parsed.nextVersionNumber || 1);
+      } else {
+        setScheduleVersions([]);
+        setNextVersionNumber(1);
+      }
+    } catch (e) {
+      console.error('バージョン読み込みエラー:', e);
+      setScheduleVersions([]);
+      setNextVersionNumber(1);
+    }
+  };
+
+  // バージョン管理: LocalStorage保存
+  const saveVersionsToLocalStorage = (versions: ScheduleVersion[], nextVer: number) => {
+    try {
+      const key = `scheduleVersions-HCU-${targetYear}-${targetMonth}`;
+      localStorage.setItem(key, JSON.stringify({ versions, nextVersionNumber: nextVer }));
+    } catch (e) {
+      console.error('バージョン保存エラー:', e);
+    }
+  };
+
   // DBから最新のリクエストデータを再読み込み
   const reloadRequestsFromDB = async () => {
     try {
@@ -451,6 +498,52 @@ const HcuScheduleSystem = () => {
       ...n,
       accessCode: generateFixedAccessCode(n.id, n.name)
     })), [activeNurses]);
+
+  // ============================================
+  // バージョン管理機能
+  // ============================================
+
+  const saveCurrentAsVersion = () => {
+    if (!schedule?.data) return;
+    const newVersion: ScheduleVersion = {
+      id: Date.now().toString(),
+      version: nextVersionNumber,
+      timestamp: new Date().toISOString(),
+      data: JSON.parse(JSON.stringify(schedule.data)),
+    };
+    let updated = [...scheduleVersions, newVersion];
+    if (updated.length > 10) {
+      updated = updated.slice(updated.length - 10);
+    }
+    const newNextVer = nextVersionNumber + 1;
+    setScheduleVersions(updated);
+    setNextVersionNumber(newNextVer);
+    saveVersionsToLocalStorage(updated, newNextVer);
+  };
+
+  const restoreVersion = async (id: string) => {
+    const ver = scheduleVersions.find(v => v.id === id);
+    if (!ver) return;
+    if (!confirm(`v${ver.version} を復元しますか？\n現在の勤務表は上書きされます。`)) return;
+    const restoredData = JSON.parse(JSON.stringify(ver.data));
+    setSchedule({ month: `${targetYear}-${targetMonth}`, data: restoredData });
+    saveScheduleToLocalStorage(restoredData);
+    try {
+      await saveSchedulesToDB(targetYear, targetMonth, restoredData);
+    } catch (e) {
+      console.error('バージョン復元DB保存エラー:', e);
+    }
+    setShowVersionHistory(false);
+  };
+
+  const deleteVersion = (id: string) => {
+    const ver = scheduleVersions.find(v => v.id === id);
+    if (!ver) return;
+    if (!confirm(`v${ver.version} を削除しますか？`)) return;
+    const updated = scheduleVersions.filter(v => v.id !== id);
+    setScheduleVersions(updated);
+    saveVersionsToLocalStorage(updated, nextVersionNumber);
+  };
 
   // ============================================
   // 管理者機能
@@ -2950,6 +3043,24 @@ const HcuScheduleSystem = () => {
               </button>
               {schedule && (
                 <button
+                  onClick={saveCurrentAsVersion}
+                  className="px-4 py-2 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-xl flex items-center gap-2 transition-colors border border-blue-200"
+                >
+                  <Save size={18} />
+                  保存（v{nextVersionNumber}）
+                </button>
+              )}
+              {scheduleVersions.length > 0 && (
+                <button
+                  onClick={() => setShowVersionHistory(true)}
+                  className="px-4 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-xl flex items-center gap-2 transition-colors border border-indigo-200"
+                >
+                  <Clock size={18} />
+                  履歴（{scheduleVersions.length}）
+                </button>
+              )}
+              {schedule && (
+                <button
                   onClick={() => {
                     if (confirm('勤務表データを消去しますか？\n\n※ 前月の読込データと職員の休み希望はそのまま保持されます。')) {
                       setSchedule(null);
@@ -4993,6 +5104,70 @@ const HcuScheduleSystem = () => {
                     </div>
                   </>
                 )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* バージョン履歴モーダル */}
+        {showVersionHistory && (
+          <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full max-h-[80vh] overflow-hidden">
+              <div className="p-6 border-b flex justify-between items-center">
+                <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                  <Clock size={20} className="text-indigo-600" />
+                  バージョン履歴
+                </h3>
+                <button onClick={() => setShowVersionHistory(false)} className="text-gray-400 hover:text-gray-600">
+                  <X size={20} />
+                </button>
+              </div>
+              <div className="p-6 overflow-y-auto max-h-[60vh]">
+                {scheduleVersions.length === 0 ? (
+                  <p className="text-gray-500 text-center py-8">保存されたバージョンはありません</p>
+                ) : (
+                  <div className="space-y-3">
+                    <p className="text-sm text-gray-500 mb-2">最大10件まで保存されます</p>
+                    {[...scheduleVersions].reverse().map(ver => {
+                      const staffCount = Object.keys(ver.data).length;
+                      const ts = new Date(ver.timestamp);
+                      const dateStr = `${ts.getFullYear()}/${(ts.getMonth()+1).toString().padStart(2,'0')}/${ts.getDate().toString().padStart(2,'0')} ${ts.getHours().toString().padStart(2,'0')}:${ts.getMinutes().toString().padStart(2,'0')}`;
+                      return (
+                        <div key={ver.id} className="border border-gray-200 rounded-xl p-4 hover:bg-gray-50 transition-colors">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <span className="font-bold text-indigo-700">v{ver.version}</span>
+                              <span className="text-sm text-gray-500 ml-3">{dateStr}</span>
+                              <span className="text-sm text-gray-400 ml-3">{staffCount}名分</span>
+                            </div>
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => restoreVersion(ver.id)}
+                                className="px-3 py-1 text-sm bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg transition-colors border border-indigo-200"
+                              >
+                                復元
+                              </button>
+                              <button
+                                onClick={() => deleteVersion(ver.id)}
+                                className="px-3 py-1 text-sm bg-red-50 hover:bg-red-100 text-red-600 rounded-lg transition-colors border border-red-200"
+                              >
+                                削除
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+              <div className="p-4 border-t flex justify-end">
+                <button
+                  onClick={() => setShowVersionHistory(false)}
+                  className="px-6 py-2 bg-gray-200 hover:bg-gray-300 rounded-xl transition-colors"
+                >
+                  閉じる
+                </button>
               </div>
             </div>
           </div>
