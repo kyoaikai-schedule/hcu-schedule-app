@@ -1639,13 +1639,15 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
 
     // 職員別
     let staffOk = true;
-    const staffDayCounts: { name: string; dc: number }[] = [];
+    const staffDayCounts: { name: string; dc: number; off: number }[] = [];
     activeNurses.forEach(n => {
       const sh = final[n.id];
-      const off = sh.filter((s: any) => isOff(s)).length;
+      const off = sh.filter((s: any) => isOff(s)).length; // 休+有のみ（明は除外）
       const dc = sh.filter((s: any) => s === '日').length;
-      staffDayCounts.push({ name: n.name, dc });
-      if (off < cfg.minDaysOff) { staffOk = false; hasViolation = true; report.push(`⚠️ ${n.name}: 休日${off}日（最低${cfg.minDaysOff}日）`); }
+      const akeCount = sh.filter((s: any) => isAkeShift(s)).length;
+      staffDayCounts.push({ name: n.name, dc, off });
+      console.log(`${n.name}: 休み数${off}日（公休+有休のみ、明${akeCount}日は除外）`);
+      if (off < cfg.minDaysOff) { staffOk = false; hasViolation = true; report.push(`⚠️ ${n.name}: 休み${off}日（最低${cfg.minDaysOff}日）※明は除外`); }
       let consec = 0, maxC = 0;
       for (let i = 0; i < sh.length; i++) { if (isWorkShift(sh[i])) { consec++; maxC = Math.max(maxC, consec); } else consec = 0; }
       if (maxC > cfg.maxConsec) { staffOk = false; hasViolation = true; report.push(`⚠️ ${n.name}: 最大連続勤務${maxC}日（上限${cfg.maxConsec}日）`); }
@@ -1656,9 +1658,13 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
     });
     if (staffOk) report.push('✅ 職員別制約: 全員OK');
 
+    // 職員別休み日数分布（明除外）
+    const offValues = staffDayCounts.map(s => s.off);
+    report.push(`📊 職員別休み日数（公休+有休、明除外）: ${staffDayCounts.map(s => `${s.name}:${s.off}`).join(', ')}`);
+    report.push(`📊 休み日数 最大${Math.max(...offValues)}日 / 最小${Math.min(...offValues)}日 / 差${Math.max(...offValues) - Math.min(...offValues)}日`);
+
     // 職員別日勤日数分布
     staffDayCounts.sort((a, b) => b.dc - a.dc);
-    report.push('');
     report.push(`📊 職員別日勤日数: ${staffDayCounts.map(s => `${s.name}:${s.dc}`).join(', ')}`);
     const dcValues = staffDayCounts.map(s => s.dc);
     report.push(`📊 日勤日数 最大${Math.max(...dcValues)}日 / 最小${Math.min(...dcValues)}日 / 差${Math.max(...dcValues) - Math.min(...dcValues)}日`);
