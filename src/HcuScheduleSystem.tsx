@@ -234,11 +234,11 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
     nightShiftPattern: [4, 4], // 週ごとの夜勤人数パターン（交互）
     startWithThree: false, // 第1週を2人から開始
     maxNightShifts: 6, // 個人の最大夜勤回数
-    minDaysOff: 8, // 最小休日数（0.5単位可）
-    maxConsecutiveDays: 5, // 最大連続勤務日数
+    minDaysOff: 8, // 最小休日数（厳格制約: 8日以上）
+    maxConsecutiveDays: 3, // 最大連続勤務日数（厳格制約: 3日）
     // 日勤者数設定
-    weekdayDayStaff: 7, // 平日の日勤者数
-    weekendDayStaff: 5, // 土日の日勤者数
+    weekdayDayStaff: 6, // 平日の日勤者数（目標6人、6-8人許容）
+    weekendDayStaff: 5, // 土日の日勤者数（厳格: 5人）
     yearEndDayStaff: 4, // 年末（12/30-31）の日勤者数
     newYearDayStaff: 4  // 年始（1/1-3）の日勤者数
   });
@@ -1033,923 +1033,682 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
     });
   };
 
-  // 勤務表自動生成（本格版）
+  // 勤務表自動生成（厳格制約版）
   const generateSchedule = () => {
     setGenerating(true);
     setShowGenerateConfig(false);
-    
+
     setTimeout(() => {
       const monthKey = `${targetYear}-${targetMonth}`;
-      const holidays = []; // 祝日リスト（必要に応じて設定）
-      
-      // 週ごとの夜勤人数を計算（月曜〜日曜ベース）
-      const getWeeklyNightStaff = () => {
-        const weeks = [];
-        const firstDay = new Date(targetYear, targetMonth, 1);
-        const firstDayOfWeek = firstDay.getDay(); // 0=日, 1=月, ...
-        
-        // 月の1日が含まれる週の月曜日を計算
-        let currentDay = 1;
-        let weekIndex = 0;
-        
-        // 第1週（月初から最初の日曜日まで）
-        const daysUntilSunday = firstDayOfWeek === 0 ? 0 : (7 - firstDayOfWeek);
-        if (daysUntilSunday > 0) {
-          const nightCount = generateConfig.startWithThree ? generateConfig.nightShiftPattern[0] : generateConfig.nightShiftPattern[1];
-          weeks.push({
-            startDay: 1,
-            endDay: Math.min(daysUntilSunday, daysInMonth),
-            count: nightCount,
-            weekNum: 1
-          });
-          currentDay = daysUntilSunday + 1;
-          weekIndex = 1;
-        }
-        
-        // 残りの週（月曜〜日曜）
-        while (currentDay <= daysInMonth) {
-          const patternIndex = generateConfig.startWithThree ? (weekIndex % 2) : ((weekIndex + 1) % 2);
-          const nightCount = generateConfig.nightShiftPattern[patternIndex];
-          const endDay = Math.min(currentDay + 6, daysInMonth);
-          
-          weeks.push({
-            startDay: currentDay,
-            endDay: endDay,
-            count: nightCount,
-            weekNum: weekIndex + 1
-          });
-          
-          currentDay = endDay + 1;
-          weekIndex++;
-        }
-        
-        return weeks;
-      };
-      
-      const weeklyNightStaff = getWeeklyNightStaff();
-      console.log('週ごとの夜勤設定:', weeklyNightStaff);
-      
-      // 設定値
-      const config = {
-        maxNightShifts: generateConfig.maxNightShifts,
-        minDaysOff: generateConfig.minDaysOff,
-        maxConsecutiveNights: 2,
-        maxConsecutiveDays: generateConfig.maxConsecutiveDays,
-        beds: 16,
-        ratio: 4,
-        weeklyNightStaff: weeklyNightStaff
-      };
+      const holidays: number[] = [];
 
-      const isWeekendOrHoliday = (day) => {
+      // ============ ヘルパー関数 ============
+      const isWeekendOrHoliday = (day: number) => {
         const date = new Date(targetYear, targetMonth, day + 1);
-        const dayOfWeek = date.getDay();
-        return dayOfWeek === 0 || dayOfWeek === 6 || holidays.includes(day + 1);
+        const dow = date.getDay();
+        return dow === 0 || dow === 6 || holidays.includes(day + 1);
       };
+      const isSunday = (day: number) => new Date(targetYear, targetMonth, day + 1).getDay() === 0;
+      const isYearEnd = (day: number) => targetMonth === 11 && (day + 1 === 30 || day + 1 === 31);
+      const isNewYear = (day: number) => targetMonth === 0 && (day + 1 >= 1 && day + 1 <= 3);
+      const isOff = (s: any) => s === '休' || s === '有';
+      const isNightShift = (s: any) => s === '夜' || s === '管夜';
+      const isAkeShift = (s: any) => s === '明' || s === '管明';
+      const isWorkShift = (s: any) => s && !isOff(s) && !isAkeShift(s);
 
-      const isSunday = (day) => {
-        const date = new Date(targetYear, targetMonth, day + 1);
-        return date.getDay() === 0;
-      };
-
-      // 年末年始判定
-      const isYearEnd = (day) => {
-        // 12月30日、31日
-        return targetMonth === 11 && (day + 1 === 30 || day + 1 === 31);
-      };
-
-      const isNewYear = (day) => {
-        // 1月1日、2日、3日
-        return targetMonth === 0 && (day + 1 >= 1 && day + 1 <= 3);
-      };
-
-      // 日勤者数の要件を取得
-      const getDayStaffRequirement = (day) => {
+      const getDayStaffRequirement = (day: number) => {
         if (isYearEnd(day)) return generateConfig.yearEndDayStaff;
         if (isNewYear(day)) return generateConfig.newYearDayStaff;
         if (isWeekendOrHoliday(day)) return generateConfig.weekendDayStaff;
         return generateConfig.weekdayDayStaff;
       };
 
-      const getNightRequirement = (dayIndex) => {
+      // 週ごとの夜勤人数
+      const getWeeklyNightStaff = () => {
+        const weeks: any[] = [];
+        const firstDayOfWeek = new Date(targetYear, targetMonth, 1).getDay();
+        let currentDay = 1;
+        let weekIndex = 0;
+        const daysUntilSunday = firstDayOfWeek === 0 ? 0 : (7 - firstDayOfWeek);
+        if (daysUntilSunday > 0) {
+          weeks.push({ startDay: 1, endDay: Math.min(daysUntilSunday, daysInMonth), count: generateConfig.startWithThree ? generateConfig.nightShiftPattern[0] : generateConfig.nightShiftPattern[1], weekNum: 1 });
+          currentDay = daysUntilSunday + 1;
+          weekIndex = 1;
+        }
+        while (currentDay <= daysInMonth) {
+          const patternIndex = generateConfig.startWithThree ? (weekIndex % 2) : ((weekIndex + 1) % 2);
+          const endDay = Math.min(currentDay + 6, daysInMonth);
+          weeks.push({ startDay: currentDay, endDay, count: generateConfig.nightShiftPattern[patternIndex], weekNum: weekIndex + 1 });
+          currentDay = endDay + 1;
+          weekIndex++;
+        }
+        return weeks;
+      };
+      const weeklyNightStaff = getWeeklyNightStaff();
+
+      const getNightRequirement = (dayIndex: number) => {
         const day = dayIndex + 1;
-        for (const period of config.weeklyNightStaff) {
-          if (day >= period.startDay && day <= period.endDay) {
-            return period.count;
-          }
+        for (const period of weeklyNightStaff) {
+          if (day >= period.startDay && day <= period.endDay) return period.count;
         }
         return 3;
       };
 
+      // 設定値
+      const config = {
+        maxNightShifts: generateConfig.maxNightShifts,
+        minDaysOff: generateConfig.minDaysOff, // 厳格: 8日以上
+        maxConsecutiveDays: generateConfig.maxConsecutiveDays, // 厳格: 3日
+      };
+
+      // 連続勤務日数を正確に計算（day時点で前方向に何日連続勤務しているか）
+      const getConsecutiveWorkBefore = (sched: any, nurseId: number, day: number) => {
+        let count = 0;
+        for (let d = day - 1; d >= 0; d--) {
+          if (isWorkShift(sched[nurseId][d])) count++; else break;
+        }
+        return count;
+      };
+      // day から後方向にも含めた連続勤務日数（day を含む）
+      const getConsecutiveWorkAround = (sched: any, nurseId: number, day: number) => {
+        let before = 0;
+        for (let d = day - 1; d >= 0; d--) { if (isWorkShift(sched[nurseId][d])) before++; else break; }
+        let after = 0;
+        for (let d = day + 1; d < daysInMonth; d++) { if (isWorkShift(sched[nurseId][d])) after++; else break; }
+        return before + 1 + after;
+      };
+
       // 休み希望を取得
-      const existingRequests = {};
+      const existingRequests: Record<number, Record<number, string>> = {};
       activeNurses.forEach(nurse => {
         existingRequests[nurse.id] = {};
         const nurseRequests = requests[monthKey]?.[String(nurse.id)] || {};
         Object.entries(nurseRequests).forEach(([day, value]) => {
-          existingRequests[nurse.id][parseInt(day) - 1] = value;
+          existingRequests[nurse.id][parseInt(day) - 1] = value as string;
         });
       });
 
-      // 候補生成関数
-      const generateCandidate = (seed) => {
-        const newSchedule = {};
-        const stats = {};
-        
-        const targetDaysOff = 9;
-        const targetWorkDays = 21;
-        
-        // 役職別の看護師リスト
-        const headNurse = activeNurses.find(n => n.position === '師長');
-        const chiefNurses = activeNurses.filter(n => n.position === '主任');
-        const deputyNurses = activeNurses.filter(n => n.position === '副主任');
-        const managementNurses = [...chiefNurses, ...deputyNurses];
+      // 有給が多い職員を特定（退社予定者・産休者対応）
+      const nurseYukyuCount: Record<number, number> = {};
+      activeNurses.forEach(nurse => {
+        nurseYukyuCount[nurse.id] = Object.values(existingRequests[nurse.id] || {}).filter(v => v === '有').length;
+      });
+
+      // 役職別
+      const headNurse = activeNurses.find(n => n.position === '師長');
+      const managementNurses = activeNurses.filter(n => n.position === '主任' || n.position === '副主任');
+
+      // ============ 候補生成関数 ============
+      const generateCandidate = (seed: number) => {
+        const sched: Record<number, (string | null)[]> = {};
+        const stats: Record<number, any> = {};
 
         // 初期化
         activeNurses.forEach(nurse => {
-          newSchedule[nurse.id] = Array(daysInMonth).fill(null);
-          stats[nurse.id] = { 
-            nightCount: 0, 
-            dayWorkCount: 0, 
-            daysOff: 0,
-            totalWork: 0,
-            weekendWork: 0,
-            consecutiveDays: 0
-          };
-          
-          // ★★★ 前月データに基づく制約を最優先で適用（1〜3日目）★★★
-          // 制約キーは1ベース（1=1日目, 2=2日目, 3=3日目）
+          sched[nurse.id] = Array(daysInMonth).fill(null);
+          stats[nurse.id] = { nightCount: 0, dayWorkCount: 0, daysOff: 0, totalWork: 0, weekendWork: 0 };
+        });
+
+        // ヘルパー: statsを更新
+        const countShift = (nurseId: number, shift: string) => {
+          if (isOff(shift)) { stats[nurseId].daysOff++; }
+          else if (isNightShift(shift)) { stats[nurseId].nightCount++; stats[nurseId].totalWork++; }
+          else if (!isAkeShift(shift)) { if (shift === '日') stats[nurseId].dayWorkCount++; stats[nurseId].totalWork++; }
+        };
+
+        // 1. 前月制約を最優先で適用
+        activeNurses.forEach(nurse => {
           if (prevMonthConstraints[nurse.id]) {
-            const constraints = prevMonthConstraints[nurse.id];
-            for (const [dayStr, shift] of Object.entries(constraints)) {
-              const day = parseInt(dayStr);       // 1ベース（1,2,3）
-              const dayIndex = day - 1;            // 0ベース配列用
+            for (const [dayStr, shift] of Object.entries(prevMonthConstraints[nurse.id])) {
+              const dayIndex = parseInt(dayStr) - 1;
               if (dayIndex >= 0 && dayIndex < daysInMonth) {
-                newSchedule[nurse.id][dayIndex] = shift;
-                if (shift === '休' || shift === '有') {
-                  stats[nurse.id].daysOff++;
-                } else if (shift === '夜' || shift === '管夜') {
-                  stats[nurse.id].nightCount++;
-                  stats[nurse.id].totalWork++;
-                } else if (shift !== '明' && shift !== '管明') {
-                  stats[nurse.id].totalWork++;
-                }
-              }
-            }
-          }
-          
-          // 既存の休み希望をコピー（前月制約で埋まっていない日のみ）
-          // ★★★ 職員の希望内容は最優先で全て反映する ★★★
-          if (existingRequests[nurse.id]) {
-            for (let day = 0; day < daysInMonth; day++) {
-              if (newSchedule[nurse.id][day]) continue; // 前月制約で埋まっている
-              const existingShift = existingRequests[nurse.id][day];
-              if (existingShift) {
-                newSchedule[nurse.id][day] = existingShift;
-                if (existingShift === '休' || existingShift === '有') {
-                  stats[nurse.id].daysOff++;
-                } else if (existingShift === '夜' || existingShift === '管夜') {
-                  stats[nurse.id].nightCount++;
-                  stats[nurse.id].totalWork++;
-                  const akeType = existingShift === '夜' ? '明' : '管明';
-                  // 夜勤希望時、翌日自動明け・翌々日自動休
-                  if (day + 1 < daysInMonth && !newSchedule[nurse.id][day + 1]) {
-                    newSchedule[nurse.id][day + 1] = akeType;
-                  }
-                  if (day + 2 < daysInMonth && !newSchedule[nurse.id][day + 2]) {
-                    newSchedule[nurse.id][day + 2] = '休';
-                    stats[nurse.id].daysOff++;
-                  }
-                } else if (existingShift === '日') {
-                  stats[nurse.id].dayWorkCount++;
-                  stats[nurse.id].totalWork++;
-                } else if (existingShift !== '明' && existingShift !== '管明') {
-                  stats[nurse.id].totalWork++;
-                }
+                sched[nurse.id][dayIndex] = shift as string;
+                countShift(nurse.id, shift as string);
               }
             }
           }
         });
 
-        // 休み希望がない場合、ランダムに休日を配置（制約日以降）
+        // 2. 職員希望を全て反映（有給優先配置を含む）
+        activeNurses.forEach(nurse => {
+          for (let day = 0; day < daysInMonth; day++) {
+            if (sched[nurse.id][day]) continue;
+            const req = existingRequests[nurse.id]?.[day];
+            if (!req) continue;
+            sched[nurse.id][day] = req;
+            countShift(nurse.id, req);
+            if (isNightShift(req)) {
+              const akeType = req === '夜' ? '明' : '管明';
+              if (day + 1 < daysInMonth && !sched[nurse.id][day + 1]) { sched[nurse.id][day + 1] = akeType; }
+              if (day + 2 < daysInMonth && !sched[nurse.id][day + 2]) { sched[nurse.id][day + 2] = '休'; stats[nurse.id].daysOff++; }
+            }
+          }
+        });
+
+        // 3. 休日配置（最低8日保証、有給多い職員は多めに休み）
         activeNurses.forEach((nurse, idx) => {
-          const currentDaysOff = stats[nurse.id].daysOff;
-          if (currentDaysOff < targetDaysOff) {
-            const offDays = new Set();
-            let attempts = 0;
-            // この職員の制約日数（最大2日）を超えた日から配置
-            const nurseConstraintDays = prevMonthConstraints[nurse.id] 
-              ? Math.max(...Object.keys(prevMonthConstraints[nurse.id]).map(Number), 0) 
-              : 0;
-            const minDay = nurseConstraintDays; // 制約最終日の次（0ベース）
-            while (offDays.size < (targetDaysOff - currentDaysOff) && attempts < 100) {
-              const rng = seed + idx * 7919 + attempts * 997;
-              const day = minDay + Math.floor((Math.abs(Math.sin(rng) * 10000)) % (daysInMonth - minDay));
-              if (!newSchedule[nurse.id][day]) {
-                offDays.add(day);
-              }
-              attempts++;
-            }
-            
-            offDays.forEach(day => {
-              newSchedule[nurse.id][day] = '休';
-              stats[nurse.id].daysOff++;
-            });
+          const yukyuBonus = nurseYukyuCount[nurse.id] >= 3 ? 2 : 0;
+          const targetOff = Math.max(config.minDaysOff + yukyuBonus, 9);
+          if (stats[nurse.id].daysOff >= targetOff) return;
+          const needed = targetOff - stats[nurse.id].daysOff;
+          const nurseConstraintDays = prevMonthConstraints[nurse.id]
+            ? Math.max(...Object.keys(prevMonthConstraints[nurse.id]).map(Number), 0)
+            : 0;
+          const minDay = nurseConstraintDays;
+          const placed = new Set<number>();
+          let attempts = 0;
+          while (placed.size < needed && attempts < 200) {
+            const rng = seed + idx * 7919 + attempts * 997;
+            const day = minDay + Math.floor((Math.abs(Math.sin(rng) * 10000)) % (daysInMonth - minDay));
+            if (!sched[nurse.id][day]) placed.add(day);
+            attempts++;
           }
+          placed.forEach(day => { sched[nurse.id][day] = '休'; stats[nurse.id].daysOff++; });
         });
 
-        // 各日のシフト割り当て
+        // 4. 夜勤割り当て（日ごと）
         for (let day = 0; day < daysInMonth; day++) {
+          const nightReq = getNightRequirement(day);
           const isSpecialDay = isWeekendOrHoliday(day);
-          const sundayFlag = isSunday(day);
-          const dayRequirement = getDayStaffRequirement(day); // 日勤者数要件を取得
-          
-          // 夜勤割り当て
-          const availableForNight = activeNurses.filter(nurse => {
-            if (newSchedule[nurse.id][day]) return false;
-            // 職員別夜勤上限を取得（厳格制約）
-            const nursePref = nurseShiftPrefs[nurse.id];
-            const nurseMaxNight = nursePref?.noNightShift ? 0 : (nursePref?.maxNightShifts ?? config.maxNightShifts);
-            if (stats[nurse.id].nightCount >= nurseMaxNight) return false;
-            // 翌日（明け用）が空いているか
-            if (day + 1 < daysInMonth && newSchedule[nurse.id][day + 1] && newSchedule[nurse.id][day + 1] !== '明') return false;
-            // ★ 夜明は連続2回まで
-            if (day > 0 && (newSchedule[nurse.id][day - 1] === '夜' || newSchedule[nurse.id][day - 1] === '管夜')) {
-              return false;
+          const available = activeNurses.filter(nurse => {
+            if (sched[nurse.id][day]) return false;
+            const pref = nurseShiftPrefs[nurse.id];
+            const maxN = pref?.noNightShift ? 0 : (pref?.maxNightShifts ?? config.maxNightShifts);
+            if (stats[nurse.id].nightCount >= maxN) return false;
+            if (day + 1 < daysInMonth && sched[nurse.id][day + 1] && sched[nurse.id][day + 1] !== '明') return false;
+            if (day > 0 && isNightShift(sched[nurse.id][day - 1])) return false;
+            // 夜明連続2回制限
+            if (day >= 2 && isAkeShift(sched[nurse.id][day - 1]) && isNightShift(sched[nurse.id][day - 2])) {
+              if (day >= 4 && isAkeShift(sched[nurse.id][day - 3]) && isNightShift(sched[nurse.id][day - 4])) return false;
             }
-            if (day >= 2 && (newSchedule[nurse.id][day - 1] === '明' || newSchedule[nurse.id][day - 1] === '管明') && (newSchedule[nurse.id][day - 2] === '夜' || newSchedule[nurse.id][day - 2] === '管夜')) {
-              if (day >= 4 && (newSchedule[nurse.id][day - 3] === '明' || newSchedule[nurse.id][day - 3] === '管明') && (newSchedule[nurse.id][day - 4] === '夜' || newSchedule[nurse.id][day - 4] === '管夜')) {
-                return false;
-              }
-            }
-            if (stats[nurse.id].consecutiveDays >= config.maxConsecutiveDays) return false;
+            // 連続勤務制限（夜勤は勤務扱い）
+            if (getConsecutiveWorkBefore(sched, nurse.id, day) >= config.maxConsecutiveDays) return false;
             return true;
           }).sort((a, b) => {
-            const aNight = stats[a.id].nightCount;
-            const bNight = stats[b.id].nightCount;
-            if (aNight !== bNight) return aNight - bNight;
-            // day+2が空いている人を優先
-            const aDay2Free = day + 2 < daysInMonth && !newSchedule[a.id][day + 2] ? 0 : 1;
-            const bDay2Free = day + 2 < daysInMonth && !newSchedule[b.id][day + 2] ? 0 : 1;
-            if (aDay2Free !== bDay2Free) return aDay2Free - bDay2Free;
-            if (isSpecialDay) {
-              return stats[a.id].weekendWork - stats[b.id].weekendWork;
-            }
-            return stats[a.id].totalWork - stats[b.id].totalWork;
+            const diff = stats[a.id].nightCount - stats[b.id].nightCount;
+            if (diff !== 0) return diff;
+            const aFree = day + 2 < daysInMonth && !sched[a.id][day + 2] ? 0 : 1;
+            const bFree = day + 2 < daysInMonth && !sched[b.id][day + 2] ? 0 : 1;
+            if (aFree !== bFree) return aFree - bFree;
+            return isSpecialDay ? stats[a.id].weekendWork - stats[b.id].weekendWork : stats[a.id].totalWork - stats[b.id].totalWork;
           });
-          
-          const nightStaff = availableForNight.slice(0, getNightRequirement(day));
-          nightStaff.forEach(nurse => {
-            newSchedule[nurse.id][day] = '夜';
+
+          available.slice(0, nightReq).forEach(nurse => {
+            sched[nurse.id][day] = '夜';
             stats[nurse.id].nightCount++;
             stats[nurse.id].totalWork++;
-            stats[nurse.id].consecutiveDays++;
             if (isSpecialDay) stats[nurse.id].weekendWork++;
-            
-            // 夜勤明けを設定
-            if (day + 1 < daysInMonth && !newSchedule[nurse.id][day + 1]) {
-              newSchedule[nurse.id][day + 1] = '明';
-              stats[nurse.id].consecutiveDays = 0;
-              
-              // 夜勤明けの翌日は休み
-              if (day + 2 < daysInMonth && !newSchedule[nurse.id][day + 2]) {
-                newSchedule[nurse.id][day + 2] = '休';
-                stats[nurse.id].daysOff++;
-              }
-            }
+            if (day + 1 < daysInMonth && !sched[nurse.id][day + 1]) { sched[nurse.id][day + 1] = '明'; }
+            if (day + 2 < daysInMonth && !sched[nurse.id][day + 2]) { sched[nurse.id][day + 2] = '休'; stats[nurse.id].daysOff++; }
           });
 
-          // 日勤割り当て
-          const availableForDay = activeNurses.filter(nurse => {
-            if (newSchedule[nurse.id][day]) return false;
-            if (stats[nurse.id].consecutiveDays >= config.maxConsecutiveDays) return false;
+          // 5. 日勤割り当て
+          const dayReq = getDayStaffRequirement(day);
+          const sundayFlag = isSunday(day);
+          const availableDay = activeNurses.filter(nurse => {
+            if (sched[nurse.id][day]) return false;
+            if (nurseShiftPrefs[nurse.id]?.noDayShift) return false;
             if (sundayFlag && nurse.position === '師長') return false;
-            // 職員別「日勤なし」設定
-            const nursePref = nurseShiftPrefs[nurse.id];
-            if (nursePref?.noDayShift) return false;
+            if (getConsecutiveWorkBefore(sched, nurse.id, day) >= config.maxConsecutiveDays) return false;
             return true;
           }).sort((a, b) => {
-            if (isSpecialDay) {
-              const weekendDiff = stats[a.id].weekendWork - stats[b.id].weekendWork;
-              if (weekendDiff !== 0) return weekendDiff;
-            }
+            if (isSpecialDay) { const d = stats[a.id].weekendWork - stats[b.id].weekendWork; if (d !== 0) return d; }
             return stats[a.id].totalWork - stats[b.id].totalWork;
           });
-          
-          const dayStaff = availableForDay.slice(0, dayRequirement);
-          dayStaff.forEach(nurse => {
-            newSchedule[nurse.id][day] = '日';
+          availableDay.slice(0, dayReq).forEach(nurse => {
+            sched[nurse.id][day] = '日';
             stats[nurse.id].dayWorkCount++;
             stats[nurse.id].totalWork++;
-            stats[nurse.id].consecutiveDays++;
             if (isSpecialDay) stats[nurse.id].weekendWork++;
           });
-          
-          // 師長が休みの日は主任・副主任が出勤しているかチェック
-          if (headNurse) {
-            const headShift = newSchedule[headNurse.id][day];
-            if (headShift === '休' || headShift === '有') {
-              const managementWorking = managementNurses.some(n => 
-                newSchedule[n.id][day] === '日'
+
+          // 師長休み時の管理職チェック
+          if (headNurse && isOff(sched[headNurse.id][day])) {
+            const mgmtWorking = managementNurses.some(n => sched[n.id][day] === '日');
+            if (!mgmtWorking) {
+              const avail = managementNurses.find(n =>
+                !sched[n.id][day] && !nurseShiftPrefs[n.id]?.noDayShift &&
+                getConsecutiveWorkBefore(sched, n.id, day) < config.maxConsecutiveDays
               );
-              if (!managementWorking) {
-                const availableManagement = managementNurses.find(n => 
-                  !newSchedule[n.id][day] && stats[n.id].consecutiveDays < config.maxConsecutiveDays
-                  && !nurseShiftPrefs[n.id]?.noDayShift
-                );
-                if (availableManagement) {
-                  newSchedule[availableManagement.id][day] = '日';
-                  stats[availableManagement.id].dayWorkCount++;
-                  stats[availableManagement.id].totalWork++;
-                  stats[availableManagement.id].consecutiveDays++;
-                  if (isSpecialDay) stats[availableManagement.id].weekendWork++;
-                }
+              if (avail) {
+                sched[avail.id][day] = '日';
+                stats[avail.id].dayWorkCount++;
+                stats[avail.id].totalWork++;
+                if (isSpecialDay) stats[avail.id].weekendWork++;
               }
             }
           }
-          
-          // 休日で連続勤務リセット
-          activeNurses.forEach(nurse => {
-            const shift = newSchedule[nurse.id][day];
-            if (shift === '休' || shift === '有') {
-              stats[nurse.id].consecutiveDays = 0;
-            }
-          });
         }
 
-        // 空きセルを埋める（★日勤者数を日別に管理してばらつきを抑制）
-        // まず各日の日勤者数を集計
+        // 6. 空きセルを埋める（連続3日制約を厳守）
         const dailyDayCount: number[] = Array(daysInMonth).fill(0);
         for (let day = 0; day < daysInMonth; day++) {
-          activeNurses.forEach(nurse => {
-            const s = newSchedule[nurse.id][day];
-            if (s === '日') dailyDayCount[day]++;
-          });
+          activeNurses.forEach(nurse => { if (sched[nurse.id][day] === '日') dailyDayCount[day]++; });
         }
 
-        // ★★★ フェーズ1: 日勤不足日を優先的に埋める（日別ループ）★★★
+        // フェーズA: 日勤不足日を優先
         for (let day = 0; day < daysInMonth; day++) {
           const dayReq = getDayStaffRequirement(day);
           if (dailyDayCount[day] >= dayReq) continue;
-          
-          const needed = dayReq - dailyDayCount[day];
-          const candidates = activeNurses
-            .filter(nurse => {
-              if (newSchedule[nurse.id][day]) return false;
-              if (nurseShiftPrefs[nurse.id]?.noDayShift) return false;
-              if (isSunday(day) && nurse.position === '師長') return false;
-              // 連続勤務チェック
-              let consec = 0;
-              for (let d = day - 1; d >= 0; d--) {
-                const s = newSchedule[nurse.id][d];
-                if (s && s !== '休' && s !== '有' && s !== '明') consec++; else break;
-              }
-              if (consec >= config.maxConsecutiveDays) return false;
-              return true;
-            })
-            .sort((a, b) => stats[a.id].totalWork - stats[b.id].totalWork);
-          
-          candidates.slice(0, needed).forEach(nurse => {
-            newSchedule[nurse.id][day] = '日';
+          const candidates = activeNurses.filter(nurse => {
+            if (sched[nurse.id][day]) return false;
+            if (nurseShiftPrefs[nurse.id]?.noDayShift) return false;
+            if (isSunday(day) && nurse.position === '師長') return false;
+            if (getConsecutiveWorkBefore(sched, nurse.id, day) >= config.maxConsecutiveDays) return false;
+            return true;
+          }).sort((a, b) => stats[a.id].totalWork - stats[b.id].totalWork);
+          candidates.slice(0, dayReq - dailyDayCount[day]).forEach(nurse => {
+            sched[nurse.id][day] = '日';
             stats[nurse.id].totalWork++;
             stats[nurse.id].dayWorkCount++;
             dailyDayCount[day]++;
-            if (isWeekendOrHoliday(day)) stats[nurse.id].weekendWork++;
           });
         }
 
-        // ★★★ フェーズ2: 残りの空きセルを埋める ★★★
+        // フェーズB: 残りの空きを埋める
+        const targetWorkDays = daysInMonth - config.minDaysOff; // 例: 30-8=22
         activeNurses.forEach(nurse => {
-          let consecutiveWork = 0;
-          // 連続勤務の初期値を計算
-          for (let d = 0; d < daysInMonth; d++) {
-            const s = newSchedule[nurse.id][d];
-            if (s && s !== '休' && s !== '有' && s !== '明') {
-              consecutiveWork++;
-            } else if (s) {
-              consecutiveWork = 0;
-            }
-          }
-          // リセットしてもう一度走査
-          consecutiveWork = 0;
-          const nursePref = nurseShiftPrefs[nurse.id];
-          const canDoDay = !nursePref?.noDayShift;
           for (let day = 0; day < daysInMonth; day++) {
-            if (!newSchedule[nurse.id][day]) {
-              const needsWork = stats[nurse.id].totalWork < targetWorkDays;
-              const tooManyConsecutive = consecutiveWork >= config.maxConsecutiveDays;
-              const shouldRest = consecutiveWork >= 4;
-              const sundayFlag = isSunday(day);
-              const canWorkDay = !(sundayFlag && nurse.position === '師長') && canDoDay;
-              
-              const dayReq = getDayStaffRequirement(day);
-              const dayShort = dailyDayCount[day] < dayReq;
-              
-              if (tooManyConsecutive || shouldRest) {
-                newSchedule[nurse.id][day] = '休';
-                stats[nurse.id].daysOff++;
-                consecutiveWork = 0;
-              } else if (needsWork && canWorkDay && dayShort) {
-                // 日勤不足の日は最優先で配置
-                newSchedule[nurse.id][day] = '日';
-                stats[nurse.id].totalWork++;
-                stats[nurse.id].dayWorkCount++;
-                dailyDayCount[day]++;
-                consecutiveWork++;
-                if (isWeekendOrHoliday(day)) stats[nurse.id].weekendWork++;
-              } else if (needsWork && canWorkDay) {
-                // 勤務日数が不足している場合は日勤配置
-                newSchedule[nurse.id][day] = '日';
-                stats[nurse.id].totalWork++;
-                stats[nurse.id].dayWorkCount++;
-                dailyDayCount[day]++;
-                consecutiveWork++;
-                if (isWeekendOrHoliday(day)) stats[nurse.id].weekendWork++;
-              } else {
-                newSchedule[nurse.id][day] = '休';
-                stats[nurse.id].daysOff++;
-                consecutiveWork = 0;
-              }
+            if (sched[nurse.id][day]) continue;
+            const consecBefore = getConsecutiveWorkBefore(sched, nurse.id, day);
+            const needsWork = stats[nurse.id].totalWork < targetWorkDays;
+            const canDoDay = !nurseShiftPrefs[nurse.id]?.noDayShift && !(isSunday(day) && nurse.position === '師長');
+
+            if (consecBefore >= config.maxConsecutiveDays) {
+              // 厳格: 3日連続後は必ず休み
+              sched[nurse.id][day] = '休';
+              stats[nurse.id].daysOff++;
+            } else if (needsWork && canDoDay) {
+              sched[nurse.id][day] = '日';
+              stats[nurse.id].totalWork++;
+              stats[nurse.id].dayWorkCount++;
+              dailyDayCount[day]++;
             } else {
-              const shift = newSchedule[nurse.id][day];
-              if (shift === '休' || shift === '有' || shift === '明') {
-                consecutiveWork = 0;
-              } else {
-                consecutiveWork++;
-              }
+              sched[nurse.id][day] = '休';
+              stats[nurse.id].daysOff++;
             }
           }
         });
 
-        // ★★★ フェーズ3 事後調整：日勤者数が不足している日を補充 ★★★
+        // フェーズC: 日勤補充（休→日勤変換、連続3日制約チェック付き）
         for (let pass = 0; pass < 3; pass++) {
           for (let day = 0; day < daysInMonth; day++) {
             const dayReq = getDayStaffRequirement(day);
             while (dailyDayCount[day] < dayReq) {
-              const candidate = activeNurses
-                .filter(nurse => {
-                  const s = newSchedule[nurse.id][day];
-                  if (s !== '休') return false;
-                  if (nurseShiftPrefs[nurse.id]?.noDayShift) return false;
-                  // 前月制約・希望で設定された休みは変更しない
-                  if (prevMonthConstraints[nurse.id]?.[day + 1]) return false;
-                  const reqVal = existingRequests[nurse.id]?.[day];
-                  if (reqVal === '休' || reqVal === '有') return false;
-                  // 連続勤務チェック
-                  let consec = 0;
-                  for (let d = day - 1; d >= 0; d--) {
-                    const s2 = newSchedule[nurse.id][d];
-                    if (s2 && s2 !== '休' && s2 !== '有' && s2 !== '明') consec++; else break;
-                  }
-                  for (let d = day + 1; d < daysInMonth; d++) {
-                    const s2 = newSchedule[nurse.id][d];
-                    if (s2 && s2 !== '休' && s2 !== '有' && s2 !== '明') consec++; else break;
-                  }
-                  if (consec >= config.maxConsecutiveDays - 1) return false;
-                  return true;
-                })
-                .sort((a, b) => stats[a.id].totalWork - stats[b.id].totalWork)[0];
-              if (!candidate) break;
-              newSchedule[candidate.id][day] = '日';
-              stats[candidate.id].totalWork++;
-              stats[candidate.id].dayWorkCount++;
-              stats[candidate.id].daysOff--;
+              const cand = activeNurses.filter(nurse => {
+                if (sched[nurse.id][day] !== '休') return false;
+                if (nurseShiftPrefs[nurse.id]?.noDayShift) return false;
+                if (prevMonthConstraints[nurse.id]?.[day + 1]) return false;
+                const req = existingRequests[nurse.id]?.[day];
+                if (req === '休' || req === '有') return false;
+                // 連続勤務チェック（前後を含めて3日超えないか）
+                if (getConsecutiveWorkAround(sched, nurse.id, day) > config.maxConsecutiveDays) return false;
+                // 最小休日数チェック
+                if (stats[nurse.id].daysOff <= config.minDaysOff) return false;
+                return true;
+              }).sort((a, b) => stats[a.id].totalWork - stats[b.id].totalWork);
+              if (cand.length === 0) break;
+              const pick = cand[0];
+              sched[pick.id][day] = '日';
+              stats[pick.id].totalWork++;
+              stats[pick.id].dayWorkCount++;
+              stats[pick.id].daysOff--;
               dailyDayCount[day]++;
             }
           }
         }
 
-        return { schedule: newSchedule, stats };
+        return { schedule: sched, stats };
       };
 
-      // スコア計算関数
-      const calculateScore = (schedule, stats) => {
-        let score = 1000;
-        
+      // ============ スコア計算関数 ============
+      const calculateScore = (schedule: any, stats: any) => {
+        let score = 10000;
+
         activeNurses.forEach(nurse => {
           const shifts = schedule[nurse.id];
           const stat = stats[nurse.id];
-          
-          // 勤務日数バランス
-          const targetWork = 21;
-          const workDiff = Math.abs(stat.totalWork - targetWork);
-          score -= workDiff * workDiff * 3;
-          
-          // 休日数バランス
-          const targetOff = 9;
-          const offDiff = Math.abs(stat.daysOff - targetOff);
-          score -= offDiff * offDiff * 3;
-          
-          // 連続勤務チェック
-          let consecutive = 0;
-          let maxConsecutive = 0;
-          for (let i = 0; i < shifts.length; i++) {
-            if (shifts[i] && shifts[i] !== '休' && shifts[i] !== '有' && shifts[i] !== '明') {
-              consecutive++;
-              maxConsecutive = Math.max(maxConsecutive, consecutive);
-            } else {
-              consecutive = 0;
-            }
-          }
-          
-          if (maxConsecutive > config.maxConsecutiveDays) {
-            score -= Math.pow(maxConsecutive - config.maxConsecutiveDays, 2) * 100;
-          }
-          
-          // 夜勤回数
-          const targetNights = 5;
-          const nightDiff = Math.abs(stat.nightCount - targetNights);
-          score -= nightDiff * nightDiff * 4;
-          
-          // 夜勤後の夜勤明け・休みチェック（絶対制約）
-          for (let i = 0; i < shifts.length - 1; i++) {
-            if (shifts[i] === '夜') {
-              if (shifts[i + 1] !== '明') score -= 2000;
-              if (i + 2 < shifts.length && shifts[i + 2] !== '休' && shifts[i + 2] !== '夜' && shifts[i + 2] !== '管夜') score -= 50;
-            }
-            if (shifts[i] === '管夜') {
-              if (shifts[i + 1] !== '管明') score -= 2000;
-              if (i + 2 < shifts.length && shifts[i + 2] !== '休' && shifts[i + 2] !== '夜' && shifts[i + 2] !== '管夜') score -= 50;
-            }
-          }
-          // 孤立した「明」「管明」のペナルティ（「夜」なしに「明」が存在）
-          for (let i = 0; i < shifts.length; i++) {
-            if (shifts[i] === '明' && (i === 0 || shifts[i - 1] !== '夜')) score -= 2000;
-            if (shifts[i] === '管明' && (i === 0 || shifts[i - 1] !== '管夜')) score -= 2000;
+
+          // 休日数: 8日未満は極めて重いペナルティ
+          if (stat.daysOff < config.minDaysOff) {
+            score -= (config.minDaysOff - stat.daysOff) * 3000;
           }
 
-          // ★ 夜明連続3回以上のペナルティ（夜・管夜混在も含む）
-          const isNight = (s: any) => s === '夜' || s === '管夜';
-          const isAke = (s: any) => s === '明' || s === '管明';
-          for (let i = 0; i < shifts.length - 4; i++) {
-            if (isNight(shifts[i]) && isAke(shifts[i+1]) && isNight(shifts[i+2]) && isAke(shifts[i+3]) &&
-                i + 4 < shifts.length && isNight(shifts[i+4])) {
-              score -= 1000;
-            }
+          // 連続勤務: 4日以上は絶対NG
+          let consec = 0;
+          let maxConsec = 0;
+          for (let i = 0; i < shifts.length; i++) {
+            if (isWorkShift(shifts[i])) { consec++; maxConsec = Math.max(maxConsec, consec); } else { consec = 0; }
           }
-          // ★ 夜明夜明の後に休休がない場合のペナルティ
+          if (maxConsec > config.maxConsecutiveDays) {
+            score -= (maxConsec - config.maxConsecutiveDays) * 5000;
+          }
+
+          // 勤務日数バランス
+          const targetWork = daysInMonth - 9;
+          score -= Math.pow(Math.abs(stat.totalWork - targetWork), 2) * 3;
+
+          // 夜勤回数バランス
+          score -= Math.pow(Math.abs(stat.nightCount - 5), 2) * 4;
+
+          // 夜→明ペア違反
+          for (let i = 0; i < shifts.length; i++) {
+            if (shifts[i] === '夜' && (i + 1 >= shifts.length || shifts[i + 1] !== '明')) score -= 3000;
+            if (shifts[i] === '管夜' && (i + 1 >= shifts.length || shifts[i + 1] !== '管明')) score -= 3000;
+            if (shifts[i] === '明' && (i === 0 || shifts[i - 1] !== '夜')) score -= 3000;
+            if (shifts[i] === '管明' && (i === 0 || shifts[i - 1] !== '管夜')) score -= 3000;
+          }
+
+          // 夜明連続3回以上
+          for (let i = 0; i < shifts.length - 4; i++) {
+            if (isNightShift(shifts[i]) && isAkeShift(shifts[i+1]) && isNightShift(shifts[i+2]) && isAkeShift(shifts[i+3]) &&
+                i + 4 < shifts.length && isNightShift(shifts[i+4])) score -= 2000;
+          }
+          // 夜明夜明→休休
           for (let i = 0; i < shifts.length - 5; i++) {
-            if (isNight(shifts[i]) && isAke(shifts[i+1]) && isNight(shifts[i+2]) && isAke(shifts[i+3])) {
+            if (isNightShift(shifts[i]) && isAkeShift(shifts[i+1]) && isNightShift(shifts[i+2]) && isAkeShift(shifts[i+3])) {
               if (i + 4 < shifts.length && shifts[i+4] !== '休') score -= 500;
               if (i + 5 < shifts.length && shifts[i+5] !== '休') score -= 500;
             }
           }
 
-          // 職員別設定チェック（★厳格制約 - 絶対に守る）
-          const nursePref = nurseShiftPrefs[nurse.id];
-          if (nursePref) {
-            const nurseMaxNight = nursePref.noNightShift ? 0 : nursePref.maxNightShifts;
-            // 夜勤なし設定の違反
-            if (nursePref.noNightShift && stat.nightCount > 0) {
-              score -= stat.nightCount * 1000; // 極めて重い
-            }
-            // 個別夜勤上限超過（厳格）
-            if (stat.nightCount > nurseMaxNight) {
-              score -= (stat.nightCount - nurseMaxNight) * 1000; // 極めて重い
-            }
-            // 日勤なし設定の違反
-            if (nursePref.noDayShift) {
-              const dayShiftCount = shifts.filter((s: any) => s === '日').length;
-              if (dayShiftCount > 0) {
-                score -= dayShiftCount * 200;
-              }
-            }
+          // 職員別設定違反
+          const pref = nurseShiftPrefs[nurse.id];
+          if (pref) {
+            const nurseMaxN = pref.noNightShift ? 0 : pref.maxNightShifts;
+            if (pref.noNightShift && stat.nightCount > 0) score -= stat.nightCount * 3000;
+            if (stat.nightCount > nurseMaxN) score -= (stat.nightCount - nurseMaxN) * 3000;
+            if (pref.noDayShift) { const dc = shifts.filter((s: any) => s === '日').length; score -= dc * 500; }
           }
         });
 
-        // ★★★ 日別日勤者数のばらつきペナルティ（生成設定の要件との乖離）★★★
+        // 日別チェック
         for (let day = 0; day < daysInMonth; day++) {
-          let dayStaffCount = 0;
-          let nightStaffCount = 0;
+          let dayCount = 0;
+          let nightCount = 0;
           activeNurses.forEach(nurse => {
-            const s = schedule[nurse.id][day];
-            if (s === '日') dayStaffCount++;
-            if (s === '夜' || s === '管夜') nightStaffCount++;
+            if (schedule[nurse.id][day] === '日') dayCount++;
+            if (isNightShift(schedule[nurse.id][day])) nightCount++;
           });
-          const required = getDayStaffRequirement(day);
-          const diff = Math.abs(dayStaffCount - required);
-          if (diff > 0) {
-            // 不足は重く、過剰はやや軽く
-            score -= dayStaffCount < required ? diff * diff * 80 : diff * diff * 15;
-          }
 
-          // ★★★ 日別夜勤人数ペナルティ（絶対制約）★★★
-          const nightRequired = getNightRequirement(day);
-          const nightDiffDaily = nightStaffCount - nightRequired;
-          if (nightDiffDaily !== 0) {
-            // 不足・過剰とも極めて重いペナルティ（絶対制約として扱う）
-            score -= Math.abs(nightDiffDaily) * 2000;
+          // 夜勤人数（絶対制約）
+          const nightReq = getNightRequirement(day);
+          if (nightCount !== nightReq) score -= Math.abs(nightCount - nightReq) * 3000;
+
+          // 日勤人数（平日6-8許容、土日5厳格）
+          const dayReq = getDayStaffRequirement(day);
+          const dayDiff = dayCount - dayReq;
+          if (isWeekendOrHoliday(day)) {
+            // 土日は厳格5人
+            if (dayDiff !== 0) score -= Math.abs(dayDiff) * 200;
+          } else {
+            // 平日は6が目標、6-8許容
+            if (dayCount < 6) score -= (6 - dayCount) * 300;
+            else if (dayCount > 8) score -= (dayCount - 8) * 200;
           }
         }
-        
+
+        // ★ 日勤人数のばらつきペナルティ（平日間の分散を最小化）
+        const weekdayDayCounts: number[] = [];
+        for (let day = 0; day < daysInMonth; day++) {
+          if (!isWeekendOrHoliday(day)) {
+            let cnt = 0;
+            activeNurses.forEach(nurse => { if (schedule[nurse.id][day] === '日') cnt++; });
+            weekdayDayCounts.push(cnt);
+          }
+        }
+        if (weekdayDayCounts.length > 1) {
+          const avg = weekdayDayCounts.reduce((a, b) => a + b, 0) / weekdayDayCounts.length;
+          const variance = weekdayDayCounts.reduce((sum, c) => sum + Math.pow(c - avg, 2), 0) / weekdayDayCounts.length;
+          score -= variance * 50;
+        }
+
         return score;
       };
 
-      // 複数の候補を生成して最良を選択
-      const candidates = [];
-      for (let i = 0; i < 30; i++) {
+      // ============ 候補生成 & 選択 ============
+      const candidates: any[] = [];
+      for (let i = 0; i < 40; i++) {
         const candidate = generateCandidate(i * 12345 + Date.now());
         const score = calculateScore(candidate.schedule, candidate.stats);
         candidates.push({ ...candidate, score });
       }
-
       candidates.sort((a, b) => b.score - a.score);
       const best = candidates[0];
 
-      // ★★★ 夜勤人数の強制調整フェーズ（最重要）★★★
-      const adjustedSchedule = JSON.parse(JSON.stringify(best.schedule));
+      // ============ 事後調整フェーズ ============
+      const adj = JSON.parse(JSON.stringify(best.schedule));
+
+      // A. 夜勤人数の強制調整
       for (let day = 0; day < daysInMonth; day++) {
-        const nightRequired = getNightRequirement(day);
-        let nightCount = 0;
-        activeNurses.forEach(nurse => {
-          if (adjustedSchedule[nurse.id][day] === '夜' || adjustedSchedule[nurse.id][day] === '管夜') nightCount++;
-        });
+        const nightReq = getNightRequirement(day);
+        let nc = 0;
+        activeNurses.forEach(n => { if (isNightShift(adj[n.id][day])) nc++; });
 
-        // 夜勤不足の場合：追加割り当て
-        let attempts = 0;
-        while (nightCount < nightRequired && attempts < 20) {
-          attempts++;
-          // 夜勤可能な候補を探す（日勤・休み・空きの人）
-          const candidates2 = activeNurses.filter(nurse => {
-            const s = adjustedSchedule[nurse.id][day];
-            if (s === '夜' || s === '明' || s === '管夜' || s === '管明') return false;
-            // 前日が夜勤系の人はダメ
-            if (day > 0 && (adjustedSchedule[nurse.id][day - 1] === '夜' || adjustedSchedule[nurse.id][day - 1] === '管夜')) return false;
-            // 翌日が既に夜勤系の人はダメ
-            if (day + 1 < daysInMonth && (adjustedSchedule[nurse.id][day + 1] === '夜' || adjustedSchedule[nurse.id][day + 1] === '管夜')) return false;
-            // 夜勤なし設定
-            const pref = nurseShiftPrefs[nurse.id];
+        while (nc < nightReq) {
+          const cands = activeNurses.filter(n => {
+            const s = adj[n.id][day];
+            if (isNightShift(s) || isAkeShift(s)) return false;
+            if (day > 0 && isNightShift(adj[n.id][day - 1])) return false;
+            if (day + 1 < daysInMonth && isNightShift(adj[n.id][day + 1])) return false;
+            const pref = nurseShiftPrefs[n.id];
             if (pref?.noNightShift) return false;
-            // ★ 職員別夜勤上限（厳格制約）
-            const nurseMaxNight = pref?.maxNightShifts ?? generateConfig.maxNightShifts;
-            const currentNightCount = adjustedSchedule[nurse.id].filter((s: any) => s === '夜' || s === '管夜').length;
-            if (currentNightCount >= nurseMaxNight) return false;
-            // ★ 夜明は連続2回まで
-            if (day >= 2 && (adjustedSchedule[nurse.id][day - 1] === '明' || adjustedSchedule[nurse.id][day - 1] === '管明') && (adjustedSchedule[nurse.id][day - 2] === '夜' || adjustedSchedule[nurse.id][day - 2] === '管夜')) {
-              if (day >= 4 && (adjustedSchedule[nurse.id][day - 3] === '明' || adjustedSchedule[nurse.id][day - 3] === '管明') && (adjustedSchedule[nurse.id][day - 4] === '夜' || adjustedSchedule[nurse.id][day - 4] === '管夜')) {
-                return false; // 夜明夜明の後は休休
-              }
-            }
+            const maxN = pref?.maxNightShifts ?? config.maxNightShifts;
+            if (adj[n.id].filter((s2: any) => isNightShift(s2)).length >= maxN) return false;
+            if (day >= 4 && isAkeShift(adj[n.id][day - 1]) && isNightShift(adj[n.id][day - 2]) && isAkeShift(adj[n.id][day - 3]) && isNightShift(adj[n.id][day - 4])) return false;
             return true;
-          });
-          if (candidates2.length === 0) break;
-
-          // 夜勤回数が少ない順に割り当て
-          candidates2.sort((a, b) => {
-            const aN = adjustedSchedule[a.id].filter((s: any) => s === '夜' || s === '管夜').length;
-            const bN = adjustedSchedule[b.id].filter((s: any) => s === '夜' || s === '管夜').length;
-            return aN - bN;
-          });
-
-          const picked = candidates2[0];
-          adjustedSchedule[picked.id][day] = '夜';
-          // 翌日明け
-          if (day + 1 < daysInMonth) {
-            adjustedSchedule[picked.id][day + 1] = '明';
-          }
-          // 翌々日休み
-          if (day + 2 < daysInMonth && adjustedSchedule[picked.id][day + 2] !== '夜' && adjustedSchedule[picked.id][day + 2] !== '管夜') {
-            adjustedSchedule[picked.id][day + 2] = '休';
-          }
-          nightCount++;
+          }).sort((a, b) => adj[a.id].filter((s: any) => isNightShift(s)).length - adj[b.id].filter((s: any) => isNightShift(s)).length);
+          if (cands.length === 0) break;
+          const pick = cands[0];
+          adj[pick.id][day] = '夜';
+          if (day + 1 < daysInMonth) adj[pick.id][day + 1] = '明';
+          if (day + 2 < daysInMonth && !isNightShift(adj[pick.id][day + 2])) adj[pick.id][day + 2] = '休';
+          nc++;
         }
 
-        // 夜勤過剰の場合：余分を日勤に変換（管夜は手動設定なので除外）
-        while (nightCount > nightRequired) {
-          const nightNurses = activeNurses.filter(nurse => adjustedSchedule[nurse.id][day] === '夜');
+        while (nc > nightReq) {
+          const nightNurses = activeNurses.filter(n => adj[n.id][day] === '夜');
           if (nightNurses.length === 0) break;
-          // 夜勤回数が多い人から削除
-          nightNurses.sort((a, b) => {
-            const aN = adjustedSchedule[a.id].filter((s: any) => s === '夜' || s === '管夜').length;
-            const bN = adjustedSchedule[b.id].filter((s: any) => s === '夜' || s === '管夜').length;
-            return bN - aN;
-          });
-          const removed = nightNurses[0];
-          adjustedSchedule[removed.id][day] = '日';
-          // 翌日明けを復元
-          if (day + 1 < daysInMonth && adjustedSchedule[removed.id][day + 1] === '明') {
-            adjustedSchedule[removed.id][day + 1] = '日';
-          }
-          // 翌々日の自動休みを復元
-          if (day + 2 < daysInMonth && adjustedSchedule[removed.id][day + 2] === '休') {
-            adjustedSchedule[removed.id][day + 2] = '日';
-          }
-          nightCount--;
+          nightNurses.sort((a, b) => adj[b.id].filter((s: any) => isNightShift(s)).length - adj[a.id].filter((s: any) => isNightShift(s)).length);
+          const rm = nightNurses[0];
+          adj[rm.id][day] = '日';
+          if (day + 1 < daysInMonth && adj[rm.id][day + 1] === '明') adj[rm.id][day + 1] = '日';
+          nc--;
         }
       }
 
-      // ★★★ 全体の夜→明→休 整合性チェック ★★★
+      // B. 夜→明→休 整合性 + 管夜→管明→休
       activeNurses.forEach(nurse => {
         for (let d = 0; d < daysInMonth; d++) {
-          if (adjustedSchedule[nurse.id][d] === '夜') {
-            if (d + 1 < daysInMonth && adjustedSchedule[nurse.id][d + 1] !== '明') {
-              adjustedSchedule[nurse.id][d + 1] = '明';
-            }
-            if (d + 2 < daysInMonth && adjustedSchedule[nurse.id][d + 2] !== '夜' && adjustedSchedule[nurse.id][d + 2] !== '明' && adjustedSchedule[nurse.id][d + 2] !== '管夜' && adjustedSchedule[nurse.id][d + 2] !== '管明') {
-              adjustedSchedule[nurse.id][d + 2] = '休';
-            }
-          }
-          // 管夜→管明→休も同様
-          if (adjustedSchedule[nurse.id][d] === '管夜') {
-            if (d + 1 < daysInMonth && adjustedSchedule[nurse.id][d + 1] !== '管明') {
-              adjustedSchedule[nurse.id][d + 1] = '管明';
-            }
-            if (d + 2 < daysInMonth && adjustedSchedule[nurse.id][d + 2] !== '夜' && adjustedSchedule[nurse.id][d + 2] !== '明' && adjustedSchedule[nurse.id][d + 2] !== '管夜' && adjustedSchedule[nurse.id][d + 2] !== '管明') {
-              adjustedSchedule[nurse.id][d + 2] = '休';
-            }
-          }
+          if (adj[nurse.id][d] === '夜' && d + 1 < daysInMonth && adj[nurse.id][d + 1] !== '明') adj[nurse.id][d + 1] = '明';
+          if (adj[nurse.id][d] === '管夜' && d + 1 < daysInMonth && adj[nurse.id][d + 1] !== '管明') adj[nurse.id][d + 1] = '管明';
+          if (adj[nurse.id][d] === '夜' && d + 2 < daysInMonth && !isNightShift(adj[nurse.id][d + 2]) && !isAkeShift(adj[nurse.id][d + 2])) adj[nurse.id][d + 2] = '休';
+          if (adj[nurse.id][d] === '管夜' && d + 2 < daysInMonth && !isNightShift(adj[nurse.id][d + 2]) && !isAkeShift(adj[nurse.id][d + 2])) adj[nurse.id][d + 2] = '休';
         }
-        // ★★★ 夜明夜明の後は必ず休休（夜・管夜混在含む）★★★
-        const isN = (s: any) => s === '夜' || s === '管夜';
-        const isA = (s: any) => s === '明' || s === '管明';
+
+        // 夜明夜明→休休
         for (let d = 0; d < daysInMonth - 5; d++) {
-          if (isN(adjustedSchedule[nurse.id][d]) && isA(adjustedSchedule[nurse.id][d + 1]) &&
-              isN(adjustedSchedule[nurse.id][d + 2]) && isA(adjustedSchedule[nurse.id][d + 3])) {
-            if (d + 4 < daysInMonth && adjustedSchedule[nurse.id][d + 4] !== '休') {
-              adjustedSchedule[nurse.id][d + 4] = '休';
-            }
-            if (d + 5 < daysInMonth && adjustedSchedule[nurse.id][d + 5] !== '休') {
-              adjustedSchedule[nurse.id][d + 5] = '休';
-            }
+          if (isNightShift(adj[nurse.id][d]) && isAkeShift(adj[nurse.id][d+1]) && isNightShift(adj[nurse.id][d+2]) && isAkeShift(adj[nurse.id][d+3])) {
+            if (d + 4 < daysInMonth && adj[nurse.id][d+4] !== '休') adj[nurse.id][d+4] = '休';
+            if (d + 5 < daysInMonth && adj[nurse.id][d+5] !== '休') adj[nurse.id][d+5] = '休';
           }
         }
-        // ★★★ 夜明は連続3回以上を禁止 ★★★
+        // 夜明3連禁止
         for (let d = 0; d < daysInMonth - 4; d++) {
-          if (isN(adjustedSchedule[nurse.id][d]) && isA(adjustedSchedule[nurse.id][d + 1]) &&
-              isN(adjustedSchedule[nurse.id][d + 2]) && isA(adjustedSchedule[nurse.id][d + 3]) &&
-              d + 4 < daysInMonth && isN(adjustedSchedule[nurse.id][d + 4])) {
-            adjustedSchedule[nurse.id][d + 4] = '休';
-            if (d + 5 < daysInMonth && isA(adjustedSchedule[nurse.id][d + 5])) {
-              adjustedSchedule[nurse.id][d + 5] = '休';
-            }
+          if (isNightShift(adj[nurse.id][d]) && isAkeShift(adj[nurse.id][d+1]) && isNightShift(adj[nurse.id][d+2]) && isAkeShift(adj[nurse.id][d+3]) && d+4 < daysInMonth && isNightShift(adj[nurse.id][d+4])) {
+            adj[nurse.id][d+4] = '休';
+            if (d+5 < daysInMonth && isAkeShift(adj[nurse.id][d+5])) adj[nurse.id][d+5] = '休';
           }
         }
-        // ★★★ 職員別夜勤上限の厳格適用 ★★★
+        // 職員別夜勤上限
         const pref = nurseShiftPrefs[nurse.id];
-        const maxN = pref?.noNightShift ? 0 : (pref?.maxNightShifts ?? generateConfig.maxNightShifts);
-        let nightCount = adjustedSchedule[nurse.id].filter((s: any) => s === '夜' || s === '管夜').length;
-        // 上限超過の場合、末日側から夜勤を削除（管夜は手動設定なので夜のみ削除）
-        if (nightCount > maxN) {
-          for (let d = daysInMonth - 1; d >= 0 && nightCount > maxN; d--) {
-            if (adjustedSchedule[nurse.id][d] === '夜') {
-              const reqVal = existingRequests[nurse.id]?.[d];
-              if (reqVal === '夜' || reqVal === '管夜') continue;
-              adjustedSchedule[nurse.id][d] = '日';
-              if (d + 1 < daysInMonth && adjustedSchedule[nurse.id][d + 1] === '明') {
-                adjustedSchedule[nurse.id][d + 1] = '日';
-              }
-              if (d + 2 < daysInMonth && adjustedSchedule[nurse.id][d + 2] === '休') {
-                adjustedSchedule[nurse.id][d + 2] = '日';
-              }
-              nightCount--;
+        const maxN = pref?.noNightShift ? 0 : (pref?.maxNightShifts ?? config.maxNightShifts);
+        let nc = adj[nurse.id].filter((s: any) => isNightShift(s)).length;
+        if (nc > maxN) {
+          for (let d = daysInMonth - 1; d >= 0 && nc > maxN; d--) {
+            if (adj[nurse.id][d] === '夜') {
+              if (existingRequests[nurse.id]?.[d] === '夜') continue;
+              adj[nurse.id][d] = '日';
+              if (d + 1 < daysInMonth && adj[nurse.id][d + 1] === '明') adj[nurse.id][d + 1] = '日';
+              nc--;
             }
           }
         }
       });
 
-      // ★★★ 改修2: 孤立した「明」「管明」の除去 ★★★
-      // 前の日が「夜」でない「明」、前の日が「管夜」でない「管明」を休みに変換
+      // C. 孤立「明」除去
       activeNurses.forEach(nurse => {
         for (let d = 0; d < daysInMonth; d++) {
-          if (adjustedSchedule[nurse.id][d] === '明') {
-            if (d === 0 || adjustedSchedule[nurse.id][d - 1] !== '夜') {
-              adjustedSchedule[nurse.id][d] = '休';
-            }
-          }
-          if (adjustedSchedule[nurse.id][d] === '管明') {
-            if (d === 0 || adjustedSchedule[nurse.id][d - 1] !== '管夜') {
-              adjustedSchedule[nurse.id][d] = '休';
-            }
-          }
+          if (adj[nurse.id][d] === '明' && (d === 0 || adj[nurse.id][d - 1] !== '夜')) adj[nurse.id][d] = '休';
+          if (adj[nurse.id][d] === '管明' && (d === 0 || adj[nurse.id][d - 1] !== '管夜')) adj[nurse.id][d] = '休';
         }
       });
 
-      // ★★★ 改修1: 夜勤人数の最終強制調整（全ての個人制約適用後に再実行）★★★
+      // D. 夜勤人数の最終強制調整（CやB後に崩れた分を再修正）
       for (let day = 0; day < daysInMonth; day++) {
-        const nightRequired = getNightRequirement(day);
-        let nightCount = 0;
-        activeNurses.forEach(nurse => {
-          if (adjustedSchedule[nurse.id][day] === '夜' || adjustedSchedule[nurse.id][day] === '管夜') nightCount++;
-        });
-
-        // 夜勤不足の場合：追加割り当て
-        let retries = 0;
-        while (nightCount < nightRequired && retries < 20) {
-          retries++;
-          const candidates3 = activeNurses.filter(nurse => {
-            const s = adjustedSchedule[nurse.id][day];
-            if (s === '夜' || s === '明' || s === '管夜' || s === '管明') return false;
-            if (day > 0 && (adjustedSchedule[nurse.id][day - 1] === '夜' || adjustedSchedule[nurse.id][day - 1] === '管夜')) return false;
-            if (day + 1 < daysInMonth && (adjustedSchedule[nurse.id][day + 1] === '夜' || adjustedSchedule[nurse.id][day + 1] === '管夜')) return false;
-            const pref = nurseShiftPrefs[nurse.id];
+        const nightReq = getNightRequirement(day);
+        let nc = 0;
+        activeNurses.forEach(n => { if (isNightShift(adj[n.id][day])) nc++; });
+        while (nc < nightReq) {
+          const cands = activeNurses.filter(n => {
+            if (isNightShift(adj[n.id][day]) || isAkeShift(adj[n.id][day])) return false;
+            if (day > 0 && isNightShift(adj[n.id][day - 1])) return false;
+            if (day + 1 < daysInMonth && isNightShift(adj[n.id][day + 1])) return false;
+            const pref = nurseShiftPrefs[n.id];
             if (pref?.noNightShift) return false;
-            const nurseMaxNight = pref?.maxNightShifts ?? generateConfig.maxNightShifts;
-            const currentN = adjustedSchedule[nurse.id].filter((s2: any) => s2 === '夜' || s2 === '管夜').length;
-            if (currentN >= nurseMaxNight) return false;
-            // 夜明連続2回制限
-            if (day >= 2) {
-              const isNightAt = (d2: number) => adjustedSchedule[nurse.id][d2] === '夜' || adjustedSchedule[nurse.id][d2] === '管夜';
-              const isAkeAt = (d2: number) => adjustedSchedule[nurse.id][d2] === '明' || adjustedSchedule[nurse.id][d2] === '管明';
-              if (isAkeAt(day - 1) && isNightAt(day - 2) && day >= 4 && isAkeAt(day - 3) && isNightAt(day - 4)) {
-                return false;
+            const maxN = pref?.maxNightShifts ?? config.maxNightShifts;
+            if (adj[n.id].filter((s2: any) => isNightShift(s2)).length >= maxN) return false;
+            return true;
+          }).sort((a, b) => adj[a.id].filter((s: any) => isNightShift(s)).length - adj[b.id].filter((s: any) => isNightShift(s)).length);
+          if (cands.length === 0) break;
+          const pick = cands[0];
+          adj[pick.id][day] = '夜';
+          if (day + 1 < daysInMonth) adj[pick.id][day + 1] = '明';
+          if (day + 2 < daysInMonth && !isNightShift(adj[pick.id][day + 2])) adj[pick.id][day + 2] = '休';
+          nc++;
+        }
+        while (nc > nightReq) {
+          const nns = activeNurses.filter(n => adj[n.id][day] === '夜');
+          if (nns.length === 0) break;
+          nns.sort((a, b) => adj[b.id].filter((s: any) => isNightShift(s)).length - adj[a.id].filter((s: any) => isNightShift(s)).length);
+          adj[nns[0].id][day] = '日';
+          if (day + 1 < daysInMonth && adj[nns[0].id][day + 1] === '明') adj[nns[0].id][day + 1] = '日';
+          nc--;
+        }
+      }
+
+      // E. 最終整合性（夜→明、孤立明除去）
+      activeNurses.forEach(nurse => {
+        for (let d = 0; d < daysInMonth; d++) {
+          if (adj[nurse.id][d] === '夜' && d + 1 < daysInMonth && adj[nurse.id][d + 1] !== '明') adj[nurse.id][d + 1] = '明';
+          if (adj[nurse.id][d] === '管夜' && d + 1 < daysInMonth && adj[nurse.id][d + 1] !== '管明') adj[nurse.id][d + 1] = '管明';
+          if (adj[nurse.id][d] === '明' && (d === 0 || adj[nurse.id][d - 1] !== '夜')) adj[nurse.id][d] = '休';
+          if (adj[nurse.id][d] === '管明' && (d === 0 || adj[nurse.id][d - 1] !== '管夜')) adj[nurse.id][d] = '休';
+        }
+      });
+
+      // F. 連続勤務3日超えの強制修正
+      activeNurses.forEach(nurse => {
+        let consec = 0;
+        for (let d = 0; d < daysInMonth; d++) {
+          if (isWorkShift(adj[nurse.id][d])) {
+            consec++;
+            if (consec > config.maxConsecutiveDays) {
+              // 希望でない限り休みに変換
+              if (!existingRequests[nurse.id]?.[d]) {
+                adj[nurse.id][d] = '休';
+                consec = 0;
               }
             }
-            return true;
-          }).sort((a, b) => {
-            const aN = adjustedSchedule[a.id].filter((s: any) => s === '夜' || s === '管夜').length;
-            const bN = adjustedSchedule[b.id].filter((s: any) => s === '夜' || s === '管夜').length;
-            return aN - bN;
-          });
-          if (candidates3.length === 0) break;
-          const picked = candidates3[0];
-          adjustedSchedule[picked.id][day] = '夜';
-          if (day + 1 < daysInMonth) {
-            adjustedSchedule[picked.id][day + 1] = '明';
-          }
-          if (day + 2 < daysInMonth && adjustedSchedule[picked.id][day + 2] !== '夜' && adjustedSchedule[picked.id][day + 2] !== '管夜') {
-            adjustedSchedule[picked.id][day + 2] = '休';
-          }
-          nightCount++;
-        }
-
-        // 夜勤過剰の場合：余分を日勤に変換
-        while (nightCount > nightRequired) {
-          const nightNurses = activeNurses.filter(nurse => adjustedSchedule[nurse.id][day] === '夜');
-          if (nightNurses.length === 0) break;
-          nightNurses.sort((a, b) => {
-            const aN = adjustedSchedule[a.id].filter((s: any) => s === '夜' || s === '管夜').length;
-            const bN = adjustedSchedule[b.id].filter((s: any) => s === '夜' || s === '管夜').length;
-            return bN - aN;
-          });
-          const removed = nightNurses[0];
-          adjustedSchedule[removed.id][day] = '日';
-          if (day + 1 < daysInMonth && adjustedSchedule[removed.id][day + 1] === '明') {
-            adjustedSchedule[removed.id][day + 1] = '日';
-          }
-          nightCount--;
-        }
-      }
-
-      // ★★★ 最終整合性チェック: 追加された夜勤の明け・孤立明の再クリーンアップ ★★★
-      activeNurses.forEach(nurse => {
-        for (let d = 0; d < daysInMonth; d++) {
-          // 夜の翌日が明でなければ修正
-          if (adjustedSchedule[nurse.id][d] === '夜' && d + 1 < daysInMonth && adjustedSchedule[nurse.id][d + 1] !== '明') {
-            adjustedSchedule[nurse.id][d + 1] = '明';
-          }
-          if (adjustedSchedule[nurse.id][d] === '管夜' && d + 1 < daysInMonth && adjustedSchedule[nurse.id][d + 1] !== '管明') {
-            adjustedSchedule[nurse.id][d + 1] = '管明';
-          }
-          // 孤立した明/管明を除去
-          if (adjustedSchedule[nurse.id][d] === '明' && (d === 0 || adjustedSchedule[nurse.id][d - 1] !== '夜')) {
-            adjustedSchedule[nurse.id][d] = '休';
-          }
-          if (adjustedSchedule[nurse.id][d] === '管明' && (d === 0 || adjustedSchedule[nurse.id][d - 1] !== '管夜')) {
-            adjustedSchedule[nurse.id][d] = '休';
+          } else {
+            consec = 0;
           }
         }
       });
 
-      // 配列形式に変換
-      const finalSchedule = {};
+      // G. 最小休日数8日の強制保証
       activeNurses.forEach(nurse => {
-        finalSchedule[nurse.id] = adjustedSchedule[nurse.id];
+        let offCount = adj[nurse.id].filter((s: any) => isOff(s)).length;
+        if (offCount < config.minDaysOff) {
+          // 勤務日数が多い日から休みに変換（希望日は除外）
+          for (let d = daysInMonth - 1; d >= 0 && offCount < config.minDaysOff; d--) {
+            if (adj[nurse.id][d] === '日' && !existingRequests[nurse.id]?.[d] && !prevMonthConstraints[nurse.id]?.[d + 1]) {
+              adj[nurse.id][d] = '休';
+              offCount++;
+            }
+          }
+        }
       });
 
-      // ★★★ 夜勤人数制約の最終バリデーション（ログ出力）★★★
-      let nightViolations = 0;
+      // ============ 最終スケジュール ============
+      const finalSchedule: Record<string, any> = {};
+      activeNurses.forEach(nurse => { finalSchedule[nurse.id] = adj[nurse.id]; });
+
+      // ============ 検証レポート ============
+      const report: string[] = [];
+      let hasViolation = false;
+
+      // 1. 夜勤人数チェック
+      let nightOk = true;
       for (let day = 0; day < daysInMonth; day++) {
-        const nightRequired = getNightRequirement(day);
-        let nightCount = 0;
-        activeNurses.forEach(nurse => {
-          if (finalSchedule[nurse.id][day] === '夜' || finalSchedule[nurse.id][day] === '管夜') nightCount++;
-        });
-        if (nightCount !== nightRequired) {
-          nightViolations++;
-          console.warn(`⚠️ ${day + 1}日: 夜勤${nightCount}人（要件${nightRequired}人）`);
+        const nightReq = getNightRequirement(day);
+        let nc = 0;
+        activeNurses.forEach(n => { if (isNightShift(finalSchedule[n.id][day])) nc++; });
+        if (nc !== nightReq) { nightOk = false; hasViolation = true; report.push(`⚠️ ${day+1}日: 夜勤${nc}人（要件${nightReq}人）`); }
+      }
+      if (nightOk) report.push('✅ 夜勤人数: 全日OK');
+
+      // 2. 日勤人数チェック
+      let dayOk = true;
+      for (let day = 0; day < daysInMonth; day++) {
+        let dc = 0;
+        activeNurses.forEach(n => { if (finalSchedule[n.id][day] === '日') dc++; });
+        const req = getDayStaffRequirement(day);
+        if (isWeekendOrHoliday(day)) {
+          if (dc !== req) { dayOk = false; report.push(`⚠️ ${day+1}日(${isWeekendOrHoliday(day)?'休日':'平日'}): 日勤${dc}人（要件${req}人）`); }
+        } else {
+          if (dc < 6 || dc > 8) { dayOk = false; report.push(`⚠️ ${day+1}日(平日): 日勤${dc}人（許容6-8人）`); }
         }
       }
-      if (nightViolations > 0) {
-        console.warn(`夜勤人数制約違反: ${nightViolations}日`);
-      } else {
-        console.log('✅ 夜勤人数制約: 全日クリア');
-      }
+      if (dayOk) report.push('✅ 日勤人数: 全日OK');
 
-      // 「明」孤立チェック（ログ出力）
-      let orphanAkeCount = 0;
+      // 3. 職員別チェック
+      let staffOk = true;
       activeNurses.forEach(nurse => {
-        for (let d = 0; d < daysInMonth; d++) {
-          if (adjustedSchedule[nurse.id][d] === '明' && (d === 0 || adjustedSchedule[nurse.id][d - 1] !== '夜')) orphanAkeCount++;
-          if (adjustedSchedule[nurse.id][d] === '管明' && (d === 0 || adjustedSchedule[nurse.id][d - 1] !== '管夜')) orphanAkeCount++;
+        const shifts = finalSchedule[nurse.id];
+        const offCount = shifts.filter((s: any) => isOff(s)).length;
+        if (offCount < config.minDaysOff) {
+          staffOk = false; hasViolation = true;
+          report.push(`⚠️ ${nurse.name}: 休日${offCount}日（最低${config.minDaysOff}日）`);
+        }
+        let consec = 0; let maxC = 0;
+        for (let i = 0; i < shifts.length; i++) {
+          if (isWorkShift(shifts[i])) { consec++; maxC = Math.max(maxC, consec); } else { consec = 0; }
+        }
+        if (maxC > config.maxConsecutiveDays) {
+          staffOk = false; hasViolation = true;
+          report.push(`⚠️ ${nurse.name}: 最大連続勤務${maxC}日（上限${config.maxConsecutiveDays}日）`);
+        }
+        // 明ペアチェック
+        for (let i = 0; i < shifts.length; i++) {
+          if (shifts[i] === '明' && (i === 0 || shifts[i-1] !== '夜')) { staffOk = false; report.push(`⚠️ ${nurse.name}: ${i+1}日に孤立「明」`); }
+          if (shifts[i] === '管明' && (i === 0 || shifts[i-1] !== '管夜')) { staffOk = false; report.push(`⚠️ ${nurse.name}: ${i+1}日に孤立「管明」`); }
         }
       });
-      if (orphanAkeCount > 0) {
-        console.warn(`孤立「明」: ${orphanAkeCount}件`);
+      if (staffOk) report.push('✅ 職員別制約: 全員OK');
+
+      // コンソール出力
+      console.log('【検証レポート】');
+      report.forEach(r => console.log(r));
+
+      // アラート表示
+      if (hasViolation) {
+        alert('⚠️ 勤務表を生成しましたが、一部制約違反があります:\n\n' + report.filter(r => r.startsWith('⚠️')).join('\n') + '\n\n手動で調整してください。');
       } else {
-        console.log('✅ 明ペアチェック: 全てクリア');
+        alert('✅ 勤務表を生成しました。全制約をクリアしています。\n\n' + report.join('\n'));
       }
 
       setSchedule({ month: monthKey, data: finalSchedule });
-      // DB保存
       saveWithStatus(async () => {
         await saveSchedulesToDB(targetYear, targetMonth, finalSchedule);
         saveScheduleToLocalStorage(finalSchedule);
