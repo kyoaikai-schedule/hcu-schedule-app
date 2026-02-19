@@ -31,76 +31,87 @@ const sanitizeShift = (s: any): string | null => {
   return VALID_SHIFTS.includes(str) ? str : null;
 };
 
-// Supabase DB操作関数
-const fetchNursesFromDB = async () => {
-  const { data, error } = await supabase.from('hcu_nurses').select('*').order('id');
-  if (error) throw error;
-  return data || [];
-};
-const upsertNurseToDB = async (nurse: any) => {
-  const { error } = await supabase.from('hcu_nurses').upsert(nurse, { onConflict: 'id' });
-  if (error) throw error;
-};
-const deleteNurseFromDB = async (id: number) => {
-  const { error } = await supabase.from('hcu_nurses').delete().eq('id', id);
-  if (error) throw error;
-};
-const fetchRequestsFromDB = async (year: number, month: number) => {
-  const { data, error } = await supabase.from('hcu_requests').select('*').eq('year', year).eq('month', month);
-  if (error) throw error;
-  return data || [];
-};
-const upsertRequestToDB = async (nurseId: number, year: number, month: number, day: number, shiftType: string) => {
-  const { error } = await supabase.from('hcu_requests').upsert(
-    { nurse_id: nurseId, year, month, day, shift_type: shiftType },
-    { onConflict: 'nurse_id,year,month,day' }
-  );
-  if (error) throw error;
-};
-const deleteRequestFromDB = async (nurseId: number, year: number, month: number, day: number) => {
-  const { error } = await supabase.from('hcu_requests').delete()
-    .eq('nurse_id', nurseId).eq('year', year).eq('month', month).eq('day', day);
-  if (error) throw error;
-};
-const fetchSchedulesFromDB = async (year: number, month: number) => {
-  const { data, error } = await supabase.from('hcu_schedules').select('*').eq('year', year).eq('month', month);
-  if (error) throw error;
-  return data || [];
-};
-const saveSchedulesToDB = async (year: number, month: number, scheduleData: Record<number, (string | null)[]>) => {
-  await supabase.from('hcu_schedules').delete().eq('year', year).eq('month', month);
-  const rows: any[] = [];
-  Object.entries(scheduleData).forEach(([nurseId, shifts]) => {
-    (shifts as (string | null)[]).forEach((shift, dayIndex) => {
-      if (shift) rows.push({ nurse_id: parseInt(nurseId), year, month, day: dayIndex + 1, shift });
-    });
-  });
-  if (rows.length > 0) {
-    const { error } = await supabase.from('hcu_schedules').insert(rows);
+// Supabase DB操作関数（prefix で部門テーブルを切り替え）
+const createDBFunctions = (prefix: string) => {
+  const t = (name: string) => `${prefix}_${name}`;
+
+  const fetchNursesFromDB = async () => {
+    const { data, error } = await supabase.from(t('nurses')).select('*').order('id');
     if (error) throw error;
-  }
-};
-const updateScheduleCellInDB = async (nurseId: number, year: number, month: number, day: number, shift: string | null) => {
-  if (shift) {
-    await supabase.from('hcu_schedules').upsert(
-      { nurse_id: nurseId, year, month, day, shift },
+    return data || [];
+  };
+  const upsertNurseToDB = async (nurse: any) => {
+    const { error } = await supabase.from(t('nurses')).upsert(nurse, { onConflict: 'id' });
+    if (error) throw error;
+  };
+  const deleteNurseFromDB = async (id: number) => {
+    const { error } = await supabase.from(t('nurses')).delete().eq('id', id);
+    if (error) throw error;
+  };
+  const fetchRequestsFromDB = async (year: number, month: number) => {
+    const { data, error } = await supabase.from(t('requests')).select('*').eq('year', year).eq('month', month);
+    if (error) throw error;
+    return data || [];
+  };
+  const upsertRequestToDB = async (nurseId: number, year: number, month: number, day: number, shiftType: string) => {
+    const { error } = await supabase.from(t('requests')).upsert(
+      { nurse_id: nurseId, year, month, day, shift_type: shiftType },
       { onConflict: 'nurse_id,year,month,day' }
     );
-  } else {
-    await supabase.from('hcu_schedules').delete()
+    if (error) throw error;
+  };
+  const deleteRequestFromDB = async (nurseId: number, year: number, month: number, day: number) => {
+    const { error } = await supabase.from(t('requests')).delete()
       .eq('nurse_id', nurseId).eq('year', year).eq('month', month).eq('day', day);
-  }
-};
-const fetchSettingFromDB = async (key: string) => {
-  const { data, error } = await supabase.from('hcu_settings').select('value').eq('key', key).single();
-  if (error && error.code !== 'PGRST116') throw error;
-  return data?.value || null;
-};
-const saveSettingToDB = async (key: string, value: string) => {
-  await supabase.from('hcu_settings').upsert(
-    { key, value, updated_at: new Date().toISOString() },
-    { onConflict: 'key' }
-  );
+    if (error) throw error;
+  };
+  const fetchSchedulesFromDB = async (year: number, month: number) => {
+    const { data, error } = await supabase.from(t('schedules')).select('*').eq('year', year).eq('month', month);
+    if (error) throw error;
+    return data || [];
+  };
+  const saveSchedulesToDB = async (year: number, month: number, scheduleData: Record<number, (string | null)[]>) => {
+    await supabase.from(t('schedules')).delete().eq('year', year).eq('month', month);
+    const rows: any[] = [];
+    Object.entries(scheduleData).forEach(([nurseId, shifts]) => {
+      (shifts as (string | null)[]).forEach((shift, dayIndex) => {
+        if (shift) rows.push({ nurse_id: parseInt(nurseId), year, month, day: dayIndex + 1, shift });
+      });
+    });
+    if (rows.length > 0) {
+      const { error } = await supabase.from(t('schedules')).insert(rows);
+      if (error) throw error;
+    }
+  };
+  const updateScheduleCellInDB = async (nurseId: number, year: number, month: number, day: number, shift: string | null) => {
+    if (shift) {
+      await supabase.from(t('schedules')).upsert(
+        { nurse_id: nurseId, year, month, day, shift },
+        { onConflict: 'nurse_id,year,month,day' }
+      );
+    } else {
+      await supabase.from(t('schedules')).delete()
+        .eq('nurse_id', nurseId).eq('year', year).eq('month', month).eq('day', day);
+    }
+  };
+  const fetchSettingFromDB = async (key: string) => {
+    const { data, error } = await supabase.from(t('settings')).select('value').eq('key', key).single();
+    if (error && error.code !== 'PGRST116') throw error;
+    return data?.value || null;
+  };
+  const saveSettingToDB = async (key: string, value: string) => {
+    await supabase.from(t('settings')).upsert(
+      { key, value, updated_at: new Date().toISOString() },
+      { onConflict: 'key' }
+    );
+  };
+
+  return {
+    t, fetchNursesFromDB, upsertNurseToDB, deleteNurseFromDB,
+    fetchRequestsFromDB, upsertRequestToDB, deleteRequestFromDB,
+    fetchSchedulesFromDB, saveSchedulesToDB, updateScheduleCellInDB,
+    fetchSettingFromDB, saveSettingToDB,
+  };
 };
 
 // ============================================
@@ -145,6 +156,13 @@ interface ScheduleVersion {
 
 const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' | 'ER'; onBack?: () => void }) => {
   const departmentName = department === 'ER' ? '救急外来' : 'HCU';
+  const dbPrefix = department === 'ER' ? 'emergency' : 'hcu';
+  const {
+    t: getTableName, fetchNursesFromDB, upsertNurseToDB, deleteNurseFromDB,
+    fetchRequestsFromDB, upsertRequestToDB, deleteRequestFromDB,
+    fetchSchedulesFromDB, saveSchedulesToDB, updateScheduleCellInDB,
+    fetchSettingFromDB, saveSettingToDB,
+  } = createDBFunctions(dbPrefix);
   // システムモード: 'select' | 'admin' | 'dashboard' | 'adminSchedule' | 'staff'
   const [systemMode, setSystemMode] = useState('select');
   
@@ -288,7 +306,7 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
           if (invalidRows.length > 0) {
             console.log(`不正シフト値を${invalidRows.length}件削除:`, invalidRows.map(r => r.shift));
             for (const r of invalidRows) {
-              await supabase.from('hcu_schedules').delete()
+              await supabase.from(getTableName('schedules')).delete()
                 .eq('nurse_id', r.nurse_id).eq('year', r.year).eq('month', r.month).eq('day', r.day);
             }
           }
@@ -713,9 +731,9 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
     // DB一括保存
     (async () => {
       try {
-        await supabase.from('hcu_nurses').delete().neq('id', 0);
+        await supabase.from(getTableName('nurses')).delete().neq('id', 0);
         if (newNurses.length > 0) {
-          await supabase.from('hcu_nurses').insert(newNurses);
+          await supabase.from(getTableName('nurses')).insert(newNurses);
         }
       } catch (e) { console.error('DB保存エラー:', e); }
     })();
@@ -860,7 +878,7 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
     clearScheduleFromLocalStorage();
     (async () => {
       try {
-        await supabase.from('hcu_schedules').delete()
+        await supabase.from(getTableName('schedules')).delete()
           .eq('year', targetYear).eq('month', targetMonth);
         console.log('前月データ反映のため勤務表を消去しました');
       } catch (e) { console.error('勤務表消去エラー:', e); }
@@ -3101,30 +3119,30 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
                 onClick={async () => {
                   const results: string[] = [];
                   try {
-                    const { error: r1 } = await supabase.from('hcu_requests').select('nurse_id').limit(1);
+                    const { error: r1 } = await supabase.from(getTableName('requests')).select('nurse_id').limit(1);
                     results.push(r1 ? '❌ requests READ: ' + r1.message : '✅ requests READ: OK');
                   } catch (e: any) { results.push('❌ requests READ: ' + e.message); }
                   try {
-                    const { error: w1 } = await supabase.from('hcu_requests').upsert(
+                    const { error: w1 } = await supabase.from(getTableName('requests')).upsert(
                       { nurse_id: 99999, year: 1999, month: 0, day: 99, shift_type: 'test' },
                       { onConflict: 'nurse_id,year,month,day' }
                     );
                     if (w1) { results.push('❌ requests WRITE: ' + w1.message); }
                     else {
                       results.push('✅ requests WRITE: OK');
-                      await supabase.from('hcu_requests').delete().eq('nurse_id', 99999);
+                      await supabase.from(getTableName('requests')).delete().eq('nurse_id', 99999);
                     }
                   } catch (e: any) { results.push('❌ requests WRITE: ' + e.message); }
                   try {
-                    const { error: r2 } = await supabase.from('hcu_nurses').select('id').limit(1);
+                    const { error: r2 } = await supabase.from(getTableName('nurses')).select('id').limit(1);
                     results.push(r2 ? '❌ nurses READ: ' + r2.message : '✅ nurses READ: OK');
                   } catch (e: any) { results.push('❌ nurses READ: ' + e.message); }
                   try {
-                    const { error: r3 } = await supabase.from('hcu_schedules').select('id').limit(1);
+                    const { error: r3 } = await supabase.from(getTableName('schedules')).select('id').limit(1);
                     results.push(r3 ? '❌ schedules READ: ' + r3.message : '✅ schedules READ: OK');
                   } catch (e: any) { results.push('❌ schedules READ: ' + e.message); }
                   try {
-                    const { error: r4 } = await supabase.from('hcu_settings').select('key').limit(1);
+                    const { error: r4 } = await supabase.from(getTableName('settings')).select('key').limit(1);
                     results.push(r4 ? '❌ settings READ: ' + r4.message : '✅ settings READ: OK');
                   } catch (e: any) { results.push('❌ settings READ: ' + e.message); }
                   alert('【DB診断結果】\n\n' + results.join('\n'));
@@ -3220,7 +3238,7 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
                       // DBから勤務表データのみ削除
                       (async () => {
                         try {
-                          await supabase.from('hcu_schedules').delete()
+                          await supabase.from(getTableName('schedules')).delete()
                             .eq('year', targetYear).eq('month', targetMonth);
                           console.log('勤務表データを消去しました');
                         } catch (e) { console.error('消去エラー:', e); }
@@ -4323,7 +4341,7 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
                     onClick={async () => {
                       if (!confirm('⚠️ この月の全職員の希望データをDBから完全に削除しますか？\n\n削除後、職員に再入力を依頼してください。')) return;
                       try {
-                        const { error } = await supabase.from('hcu_requests').delete()
+                        const { error } = await supabase.from(getTableName('requests')).delete()
                           .eq('year', targetYear).eq('month', targetMonth);
                         if (error) throw error;
                         setRequests(prev => {
