@@ -1646,14 +1646,25 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
     const staffDayCounts: { name: string; dc: number; off: number; kyuCount: number; yuCount: number }[] = [];
     activeNurses.forEach(n => {
       const sh = final[n.id];
-      const kyuCount = sh.filter((s: any) => s === '休').length;
-      const yuCount = sh.filter((s: any) => s === '有').length;
+      // 厳密カウント: 1セルずつ確認
+      let kyuCount = 0, yuCount = 0, akeCount = 0, nightCount = 0, dayCount = 0, otherCount = 0;
+      const shiftList: string[] = [];
+      for (let d = 0; d < sh.length; d++) {
+        const s = sh[d];
+        shiftList.push(s || '空');
+        if (s === '休') kyuCount++;
+        else if (s === '有') yuCount++;
+        else if (s === '明' || s === '管明') akeCount++;
+        else if (s === '夜' || s === '管夜') nightCount++;
+        else if (s === '日') dayCount++;
+        else otherCount++;
+      }
       const off = kyuCount + yuCount; // 休+有のみ（明は絶対に除外）
-      const dc = sh.filter((s: any) => s === '日').length;
-      const akeCount = sh.filter((s: any) => isAkeShift(s)).length;
+      const dc = dayCount;
       staffDayCounts.push({ name: n.name, dc, off, kyuCount, yuCount });
-      console.log(`${n.name}: 休み数${off}日（休${kyuCount}日 + 有${yuCount}日、明${akeCount}日は除外）`);
-      if (off < cfg.minDaysOff) { staffOk = false; hasViolation = true; report.push(`⚠️ ${n.name}: 休み${off}日（休${kyuCount} + 有${yuCount}、最低${cfg.minDaysOff}日）※明は除外`); }
+      console.log(`【${n.name}】休み${off}日（休${kyuCount} + 有${yuCount}）| 日${dayCount} 夜${nightCount} 明${akeCount} 他${otherCount} | 合計${sh.length}日`);
+      console.log(`  シフト: ${shiftList.join(',')}`);
+      if (off < cfg.minDaysOff) { staffOk = false; hasViolation = true; report.push(`⚠️ ${n.name}: 休み${off}日（休${kyuCount} + 有${yuCount}、最低${cfg.minDaysOff}日）※明${akeCount}日は除外`); }
       let consec = 0, maxC = 0;
       for (let i = 0; i < sh.length; i++) { if (isWorkShift(sh[i])) { consec++; maxC = Math.max(maxC, consec); } else consec = 0; }
       if (maxC > cfg.maxConsec) { staffOk = false; hasViolation = true; report.push(`⚠️ ${n.name}: 最大連続勤務${maxC}日（上限${cfg.maxConsec}日）`); }
@@ -1689,18 +1700,25 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
 
     // 希望反映検証
     let reqOk = true;
+    let reqTotal = 0, reqMet = 0;
     activeNurses.forEach(n => {
       for (const [dStr, req] of Object.entries(exReqs[n.id] || {})) {
         const d = Number(dStr);
-        if (d >= 0 && d < daysInMonth && final[n.id][d] !== req) {
-          // 夜→明の自動配置日は希望と異なっても許容
-          if (isAkeShift(final[n.id][d]) && d > 0 && isNightShift(final[n.id][d - 1])) continue;
-          if (final[n.id][d] === '休' && d > 0 && isNightShift(final[n.id][d - 1]) && d + 1 < daysInMonth) continue;
-          reqOk = false;
-          report.push(`⚠️ ${n.name}: ${d+1}日 希望「${req}」→実際「${final[n.id][d]}」`);
-        }
+        if (d < 0 || d >= daysInMonth) continue;
+        reqTotal++;
+        if (final[n.id][d] === req) { reqMet++; continue; }
+        // 前月制約で上書きされた日は許容
+        if (prevMonthConstraints[n.id]?.[d + 1]) continue;
+        // 夜→明の自動配置日は希望と異なっても許容
+        if (isAkeShift(final[n.id][d]) && d > 0 && isNightShift(final[n.id][d - 1])) continue;
+        // 夜→明→休の休配置日は許容
+        if (final[n.id][d] === '休' && d >= 2 && isNightShift(final[n.id][d - 2])) continue;
+        reqOk = false;
+        report.push(`⚠️ ${n.name}: ${d+1}日 希望「${req}」→実際「${final[n.id][d]}」`);
+        console.warn(`  希望不一致: ${n.name} ${d+1}日 希望=${req} 実際=${final[n.id][d]}`);
       }
     });
+    report.push(`📊 希望反映率: ${reqMet}/${reqTotal}件`);
     if (reqOk) report.push('✅ 希望反映: 全希望OK');
 
     // 職員別休み日数分布（明除外）
