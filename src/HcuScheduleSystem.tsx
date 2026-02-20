@@ -1120,6 +1120,10 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
     const isNightShift = (s: any) => s === '夜' || s === '管夜';
     const isAkeShift = (s: any) => s === '明' || s === '管明';
     const isWorkShift = (s: any) => s && !isOff(s) && !isAkeShift(s);
+    const wouldBeTripleNight = (schedule: any, nurseId: number, day: number) => {
+      if (day >= 4 && isNightShift(schedule[nurseId][day-4]) && isAkeShift(schedule[nurseId][day-3]) && isNightShift(schedule[nurseId][day-2]) && isAkeShift(schedule[nurseId][day-1])) return true;
+      return false;
+    };
 
     const getDayStaffReq = (day: number) => {
       if (isYearEnd(day)) return generateConfig.yearEndDayStaff;
@@ -1289,7 +1293,7 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
           // 翌日がロックされていて明以外の希望がある場合は夜勤不可
           if (day + 1 < daysInMonth && isLocked(n.id, day + 1) && exReqs[n.id]?.[day + 1] && exReqs[n.id][day + 1] !== '明') return false;
           if (day > 0 && isNightShift(sc[n.id][day - 1])) return false;
-          if (day >= 2 && isAkeShift(sc[n.id][day - 1]) && isNightShift(sc[n.id][day - 2]) && day >= 4 && isAkeShift(sc[n.id][day - 3]) && isNightShift(sc[n.id][day - 4])) return false;
+          if (wouldBeTripleNight(sc, n.id, day)) return false;
           if (consecBefore(sc, n.id, day) >= cfg.maxConsec) return false;
           return true;
         }).sort((a, b) => {
@@ -1599,7 +1603,7 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
           if (pr?.noNightShift) return false;
           const mx = pr?.maxNightShifts ?? cfg.maxNightShifts;
           if (adj[n.id].filter((s: any) => isNightShift(s)).length >= mx) return false;
-          if (day >= 4 && isAkeShift(adj[n.id][day-1]) && isNightShift(adj[n.id][day-2]) && isAkeShift(adj[n.id][day-3]) && isNightShift(adj[n.id][day-4])) return false;
+          if (wouldBeTripleNight(adj, n.id, day)) return false;
           return true;
         }).sort((a, b) => adj[a.id].filter((s: any) => isNightShift(s)).length - adj[b.id].filter((s: any) => isNightShift(s)).length);
         if (cands.length === 0) break;
@@ -1671,7 +1675,8 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
       activeNurses.forEach(n => { if (isNightShift(adj[n.id][day])) nc++; });
       while (nc < nReq) {
         const c = activeNurses.filter(n => !isNightShift(adj[n.id][day]) && !isAkeShift(adj[n.id][day]) && !isLocked(n.id, day) && !(day > 0 && isNightShift(adj[n.id][day-1])) && !(day+1 < daysInMonth && isNightShift(adj[n.id][day+1])) && !nurseShiftPrefs[n.id]?.noNightShift && adj[n.id].filter((s: any) => isNightShift(s)).length < (nurseShiftPrefs[n.id]?.maxNightShifts ?? cfg.maxNightShifts)
-          && !(day + 1 < daysInMonth && isLocked(n.id, day + 1) && exReqs[n.id]?.[day + 1] && exReqs[n.id][day + 1] !== '明'))
+          && !(day + 1 < daysInMonth && isLocked(n.id, day + 1) && exReqs[n.id]?.[day + 1] && exReqs[n.id][day + 1] !== '明')
+          && !wouldBeTripleNight(adj, n.id, day))
           .sort((a, b) => adj[a.id].filter((s: any) => isNightShift(s)).length - adj[b.id].filter((s: any) => isNightShift(s)).length);
         if (c.length === 0) break;
         adj[c[0].id][day] = '夜';
@@ -1744,6 +1749,7 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
           if (pr?.noNightShift) return false;
           const mx = pr?.maxNightShifts ?? cfg.maxNightShifts;
           if (adj[n.id].filter((s: any) => isNightShift(s)).length >= mx) return false;
+          if (wouldBeTripleNight(adj, n.id, day)) return false;
           return true;
         }).sort((a, b) => adj[a.id].filter((s: any) => isNightShift(s)).length - adj[b.id].filter((s: any) => isNightShift(s)).length);
 
@@ -1937,6 +1943,7 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
           if (pr?.noNightShift) return false;
           const mx = pr?.maxNightShifts ?? cfg.maxNightShifts;
           if (adj[n.id].filter((s: any) => isNightShift(s)).length >= mx) return false;
+          if (wouldBeTripleNight(adj, n.id, day)) return false;
           return true;
         }).sort((a, b) => adj[a.id].filter((s: any) => isNightShift(s)).length - adj[b.id].filter((s: any) => isNightShift(s)).length);
 
@@ -1952,6 +1959,7 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
             if (pr?.noNightShift) return false;
             const mx = (pr?.maxNightShifts ?? cfg.maxNightShifts) + 1;
             if (adj[n.id].filter((s: any) => isNightShift(s)).length >= mx) return false;
+            if (wouldBeTripleNight(adj, n.id, day)) return false;
             return true;
           }).sort((a, b) => adj[a.id].filter((s: any) => isNightShift(s)).length - adj[b.id].filter((s: any) => isNightShift(s)).length);
         }
