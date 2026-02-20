@@ -291,7 +291,7 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
     nightShiftPattern: [4, 4], // 週ごとの夜勤人数パターン（交互）
     startWithThree: false, // 第1週を2人から開始
     maxNightShifts: 6, // 個人の最大夜勤回数
-    minDaysOff: 8, // 最小休日数（厳格制約: 8日以上）
+    maxDaysOff: 10, // 最大休日数（病院規定: この日数以下にする）
     maxConsecutiveDays: 3, // 最大連続勤務日数（厳格制約: 3日）
     // 日勤者数設定
     weekdayDayStaff: 6, // 平日の日勤者数（目標6人、6-8人許容）
@@ -305,7 +305,7 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
   const [prevMonthConstraints, setPrevMonthConstraints] = useState<any>({});
   
   // 職員別シフト設定: { nurseId: { maxNightShifts: number, noNightShift: boolean, noDayShift: boolean } }
-  const [nurseShiftPrefs, setNurseShiftPrefs] = useState<Record<number, { maxNightShifts: number; noNightShift: boolean; noDayShift: boolean }>>({});
+  const [nurseShiftPrefs, setNurseShiftPrefs] = useState<Record<number, { maxNightShifts: number; noNightShift: boolean; noDayShift: boolean; excludeFromMaxDaysOff: boolean }>>({});
   const [showNurseShiftPrefs, setShowNurseShiftPrefs] = useState(false);
   
   // 前月データ関連（プレビュー用）
@@ -1151,7 +1151,7 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
 
     const cfg = {
       maxNightShifts: generateConfig.maxNightShifts,
-      minDaysOff: generateConfig.minDaysOff,
+      maxDaysOff: generateConfig.maxDaysOff,
       maxConsec: generateConfig.maxConsecutiveDays,
     };
 
@@ -1255,7 +1255,8 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
       // 休日配置（8日以上保証、有給多→+2）
       activeNurses.forEach((n, idx) => {
         const bonus = yukyuCnt[n.id] >= 3 ? 2 : 0;
-        const tgt = Math.max(cfg.minDaysOff + bonus, 9);
+        const isExcluded = nurseShiftPrefs[n.id]?.excludeFromMaxDaysOff;
+        const tgt = isExcluded ? (daysInMonth - 10) : Math.min(cfg.maxDaysOff + bonus, cfg.maxDaysOff + 2);
         if (st[n.id].daysOff >= tgt) return;
         const need = tgt - st[n.id].daysOff;
         const cDay = prevMonthConstraints[n.id] ? Math.max(...Object.keys(prevMonthConstraints[n.id]).map(Number), 0) : 0;
@@ -1346,7 +1347,7 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
       }
 
       // 残りの空き（夜勤が少ない人を先に日勤配置）
-      const twk = daysInMonth - cfg.minDaysOff;
+      const twk = daysInMonth - cfg.maxDaysOff;
       const sortedForFill = [...activeNurses].sort((a, b) => {
         const posOrd = (n: any) => ['師長', '主任', '副主任'].includes(n.position) ? 0 : 1;
         const aPo = posOrd(a); const bPo = posOrd(b);
@@ -1371,7 +1372,7 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
         for (let d = 0; d < daysInMonth; d++) {
           const req = getDayStaffReq(d);
           while (ddc[d] < req) {
-            const c = activeNurses.filter(n => sc[n.id][d] === '休' && !nurseShiftPrefs[n.id]?.noDayShift && !isLocked(n.id, d) && consecAround(sc, n.id, d) <= cfg.maxConsec && st[n.id].daysOff > cfg.minDaysOff)
+            const c = activeNurses.filter(n => sc[n.id][d] === '休' && !nurseShiftPrefs[n.id]?.noDayShift && !isLocked(n.id, d) && consecAround(sc, n.id, d) <= cfg.maxConsec && st[n.id].daysOff > cfg.maxDaysOff && !nurseShiftPrefs[n.id]?.excludeFromMaxDaysOff)
               .sort((a, b) => {
                 const posOrd = (n: any) => ['師長', '主任', '副主任'].includes(n.position) ? 0 : 1;
                 const aPo = posOrd(a); const bPo = posOrd(b);
@@ -1403,7 +1404,8 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
           else if (isAkeShift(sh[i])) { consec = 0; }
           else { consec++; maxC = Math.max(maxC, consec); }
         }
-        if (off < cfg.minDaysOff) s -= (cfg.minDaysOff - off) * 5000;
+        const isExcl = nurseShiftPrefs[n.id]?.excludeFromMaxDaysOff;
+        if (!isExcl && off > cfg.maxDaysOff) s -= (off - cfg.maxDaysOff) * 5000;
         if (maxC > cfg.maxConsec) s -= (maxC - cfg.maxConsec) * 5000;
         for (let i = 0; i < sh.length; i++) {
           if (sh[i] === '夜' && (i + 1 >= sh.length || sh[i + 1] !== '明')) s -= 3000;
@@ -1467,7 +1469,7 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
         }
         // 休日数
         const off = sc[n.id].filter((s: any) => isOff(s)).length;
-        if (off < cfg.minDaysOff) penalty += (cfg.minDaysOff - off) * 200;
+        if (!nurseShiftPrefs[n.id]?.excludeFromMaxDaysOff && off > cfg.maxDaysOff) penalty += (off - cfg.maxDaysOff) * 200;
       });
       return calcDayStdDev(sc) + penalty;
     };
@@ -1512,7 +1514,7 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
       // 休日数チェック
       if (valid && newShift === '日') {
         const off = adj[nurse.id].filter((s: any) => isOff(s)).length;
-        if (off < cfg.minDaysOff) valid = false;
+        if (!nurseShiftPrefs[nurse.id]?.excludeFromMaxDaysOff && off > cfg.maxDaysOff) valid = false;
       }
 
       if (!valid) { adj[nurse.id][day] = old; continue; }
@@ -1563,7 +1565,7 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
           const lOk = (() => { let c = 0; for (let i = 0; i < daysInMonth; i++) { if (isWorkShift(adj[least.id][i])) { c++; if (c > cfg.maxConsec) return false; } else c = 0; } return true; })();
           const mOff = adj[most.id].filter((s: any) => isOff(s)).length;
           const lOff = adj[least.id].filter((s: any) => isOff(s)).length;
-          if (mOk && lOk && mOff >= cfg.minDaysOff && lOff >= cfg.minDaysOff) { swapped = true; }
+          if (mOk && lOk && mOff <= cfg.maxDaysOff && lOff <= cfg.maxDaysOff) { swapped = true; }
           else { adj[most.id][d] = '日'; adj[least.id][d] = '休'; }
         }
       }
@@ -1707,12 +1709,16 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
       }
     });
 
-    // G. 最小休日数8日保証（ロック保護）
+    // G. 最大休日数制限（ロック保護）— 除外者はスキップ
     activeNurses.forEach(n => {
+      if (nurseShiftPrefs[n.id]?.excludeFromMaxDaysOff) return; // 退職有給消化者は除外
       let off = adj[n.id].filter((s: any) => isOff(s)).length;
-      if (off < cfg.minDaysOff) {
-        for (let d = daysInMonth - 1; d >= 0 && off < cfg.minDaysOff; d--) {
-          if (adj[n.id][d] === '日' && !isLocked(n.id, d)) { adj[n.id][d] = '休'; off++; }
+      if (off > cfg.maxDaysOff) {
+        for (let d = daysInMonth - 1; d >= 0 && off > cfg.maxDaysOff; d--) {
+          if (adj[n.id][d] === '休' && !isLocked(n.id, d)) {
+            adj[n.id][d] = '日';
+            off--;
+          }
         }
       }
     });
@@ -1782,8 +1788,7 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
             if (isLocked(n.id, day)) return false;
             if (nurseShiftPrefs[n.id]?.noDayShift) return false;
             if (isSunday(day) && n.position === '師長') return false;
-            const off = adj[n.id].filter((s: any) => isOff(s)).length;
-            if (off <= cfg.minDaysOff) return false;
+            if (nurseShiftPrefs[n.id]?.excludeFromMaxDaysOff) return false;
             let before = 0;
             for (let d = day - 1; d >= 0; d--) { if (isWorkShift(adj[n.id][d])) before++; else break; }
             let after = 0;
@@ -1882,8 +1887,7 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
           if (isLocked(n.id, day)) return false;
           if (nurseShiftPrefs[n.id]?.noDayShift) return false;
           if (isSunday(day) && n.position === '師長') return false;
-          const off = adj[n.id].filter((s: any) => isOff(s)).length;
-          if (off <= cfg.minDaysOff) return false;
+          if (nurseShiftPrefs[n.id]?.excludeFromMaxDaysOff) return false;
           let before = 0;
           for (let d = day - 1; d >= 0; d--) { if (isWorkShift(adj[n.id][d])) before++; else break; }
           let after = 0;
@@ -2038,7 +2042,13 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
       staffDayCounts.push({ name: n.name, dc, off, kyuCount, yuCount });
       console.log(`【${n.name}】休み${off}日（休${kyuCount} + 有${yuCount}）| 日${dayCount} 夜${nightCount} 明${akeCount} 他${otherCount} | 合計${sh.length}日`);
       console.log(`  シフト: ${shiftList.join(',')}`);
-      if (off < cfg.minDaysOff) { staffOk = false; hasViolation = true; report.push(`⚠️ ${n.name}: 休み${off}日（休${kyuCount} + 有${yuCount}、最低${cfg.minDaysOff}日）※明${akeCount}日は除外`); }
+      if (!nurseShiftPrefs[n.id]?.excludeFromMaxDaysOff && off > cfg.maxDaysOff) {
+        staffOk = false; hasViolation = true;
+        report.push(`⚠️ ${n.name}: 休み${off}日（休${kyuCount} + 有${yuCount}、上限${cfg.maxDaysOff}日超過）※明${akeCount}日は除外`);
+      }
+      if (nurseShiftPrefs[n.id]?.excludeFromMaxDaysOff) {
+        report.push(`ℹ️ ${n.name}: 休み${off}日（休日上限除外）`);
+      }
       let consec = 0, maxC = 0;
       for (let i = 0; i < sh.length; i++) { if (isWorkShift(sh[i])) { consec++; maxC = Math.max(maxC, consec); } else consec = 0; }
       if (maxC > cfg.maxConsec) { staffOk = false; hasViolation = true; report.push(`⚠️ ${n.name}: 最大連続勤務${maxC}日（上限${cfg.maxConsec}日）`); }
@@ -4096,6 +4106,7 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
                           {nurse.name}
                           {!isMaximized && nurseShiftPrefs[nurse.id]?.noNightShift && <span className="ml-1 text-[10px] bg-purple-100 text-purple-600 px-1 rounded">夜×</span>}
                           {!isMaximized && nurseShiftPrefs[nurse.id]?.noDayShift && <span className="ml-1 text-[10px] bg-blue-100 text-blue-600 px-1 rounded">日×</span>}
+                          {!isMaximized && nurseShiftPrefs[nurse.id]?.excludeFromMaxDaysOff && <span className="ml-1 text-[10px] bg-orange-100 text-orange-600 px-1 rounded">除外</span>}
                         </td>
                         {shifts.map((shift: any, i: number) => {
                           const day = i + 1;
@@ -5067,7 +5078,7 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
 
                 <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 mb-4">
                   <p className="text-sm text-blue-800">
-                    <strong>💡 説明：</strong>職員ごとに夜勤の最大回数や、日勤なし・夜勤なしの希望を設定できます。
+                    <strong>💡 説明：</strong>職員ごとに夜勤の最大回数、日勤なし・夜勤なし、休日上限除外（退職有給消化等）を設定できます。
                     自動生成時にこの設定が反映されます。
                     未設定の場合は共通設定（最大{generateConfig.maxNightShifts}回）が適用されます。
                   </p>
@@ -5082,11 +5093,12 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
                         <th className="border p-2 text-center">夜勤上限</th>
                         <th className="border p-2 text-center">夜勤なし</th>
                         <th className="border p-2 text-center">日勤なし</th>
+                        <th className="border p-2 text-center">休日上限除外</th>
                       </tr>
                     </thead>
                     <tbody>
                       {activeNurses.map((nurse: any) => {
-                        const pref = nurseShiftPrefs[nurse.id] || { maxNightShifts: generateConfig.maxNightShifts, noNightShift: false, noDayShift: false };
+                        const pref = nurseShiftPrefs[nurse.id] || { maxNightShifts: generateConfig.maxNightShifts, noNightShift: false, noDayShift: false, excludeFromMaxDaysOff: false };
                         return (
                           <tr key={nurse.id} className="hover:bg-gray-50">
                             <td className="border p-2 font-medium whitespace-nowrap">
@@ -5137,6 +5149,19 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
                                   }));
                                 }}
                                 className="w-5 h-5 text-blue-600 rounded"
+                              />
+                            </td>
+                            <td className="border p-2 text-center">
+                              <input
+                                type="checkbox"
+                                checked={pref.excludeFromMaxDaysOff || false}
+                                onChange={(e) => {
+                                  setNurseShiftPrefs(prev => ({
+                                    ...prev,
+                                    [nurse.id]: { ...pref, excludeFromMaxDaysOff: e.target.checked }
+                                  }));
+                                }}
+                                className="w-5 h-5 text-orange-600 rounded"
                               />
                             </td>
                           </tr>
@@ -5300,10 +5325,10 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
                         </select>
                       </div>
                       <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">最小休日数</label>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">最大休日数</label>
                         <select
-                          value={generateConfig.minDaysOff}
-                          onChange={(e) => setGenerateConfig(prev => ({ ...prev, minDaysOff: parseFloat(e.target.value) }))}
+                          value={generateConfig.maxDaysOff}
+                          onChange={(e) => setGenerateConfig(prev => ({ ...prev, maxDaysOff: parseFloat(e.target.value) }))}
                           className="w-full px-3 py-2 border-2 rounded-lg"
                         >
                           {Array.from({ length: 25 }, (_, i) => 3 + i * 0.5).map(n => (
