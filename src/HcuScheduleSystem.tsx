@@ -3783,7 +3783,7 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
                                           isWeekend ? generateConfig.weekendDayStaff :
                                           generateConfig.weekdayDayStaff;
                       return (
-                        <td key={i} className={`border text-center text-blue-700 ${isMaximized ? 'p-0 text-[10px]' : 'p-1'} ${count < minRequired ? 'bg-red-200 text-red-700' : count > minRequired + 2 ? 'bg-yellow-200 text-yellow-700' : ''}`}>
+                        <td key={i} className={`border text-center text-blue-700 ${isMaximized ? 'p-0 text-[10px]' : 'p-1'} ${count !== minRequired ? 'ring-2 ring-red-500 bg-red-50' : ''}`}>
                           <div>{count}</div>
                           <div className="text-[9px] text-gray-400">/{minRequired}</div>
                         </td>
