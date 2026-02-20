@@ -1616,7 +1616,12 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
     activeNurses.forEach(n => {
       let c = 0;
       for (let d = 0; d < daysInMonth; d++) {
-        if (isWorkShift(adj[n.id][d])) { c++; if (c > cfg.maxConsec && !isLocked(n.id, d)) { adj[n.id][d] = '休'; c = 0; } }
+        if (isWorkShift(adj[n.id][d])) {
+          c++;
+          if (c > cfg.maxConsec && !isLocked(n.id, d) && !isNightShift(adj[n.id][d]) && !isAkeShift(adj[n.id][d])) {
+            adj[n.id][d] = '休'; c = 0;
+          }
+        }
         else c = 0;
       }
     });
@@ -1628,6 +1633,54 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
         for (let d = daysInMonth - 1; d >= 0 && off < cfg.minDaysOff; d--) {
           if (adj[n.id][d] === '日' && !isLocked(n.id, d)) { adj[n.id][d] = '休'; off++; }
         }
+      }
+    });
+
+    // H. 最終夜勤・日勤人数の絶対保証（全修正後の最終調整）
+    for (let day = 0; day < daysInMonth; day++) {
+      const nReq = getNightReq(day);
+      let nc = 0;
+      activeNurses.forEach(n => { if (isNightShift(adj[n.id][day])) nc++; });
+
+      while (nc < nReq) {
+        const cands = activeNurses.filter(n => {
+          if (isNightShift(adj[n.id][day]) || isAkeShift(adj[n.id][day])) return false;
+          if (isLocked(n.id, day)) return false;
+          if (day > 0 && isNightShift(adj[n.id][day - 1])) return false;
+          if (day + 1 < daysInMonth && isNightShift(adj[n.id][day + 1])) return false;
+          if (day + 1 < daysInMonth && isLocked(n.id, day + 1) && exReqs[n.id]?.[day + 1] && exReqs[n.id][day + 1] !== '明') return false;
+          const pr = nurseShiftPrefs[n.id];
+          if (pr?.noNightShift) return false;
+          const mx = pr?.maxNightShifts ?? cfg.maxNightShifts;
+          if (adj[n.id].filter((s: any) => isNightShift(s)).length >= mx) return false;
+          return true;
+        }).sort((a, b) => adj[a.id].filter((s: any) => isNightShift(s)).length - adj[b.id].filter((s: any) => isNightShift(s)).length);
+
+        if (cands.length === 0) break;
+        const pk = cands[0];
+        adj[pk.id][day] = '夜';
+        if (day + 1 < daysInMonth && !isLocked(pk.id, day + 1)) adj[pk.id][day + 1] = '明';
+        if (day + 2 < daysInMonth && !isNightShift(adj[pk.id][day + 2]) && !isLocked(pk.id, day + 2)) adj[pk.id][day + 2] = '休';
+        nc++;
+      }
+
+      while (nc > nReq) {
+        const nns = activeNurses.filter(n => adj[n.id][day] === '夜' && !isLocked(n.id, day));
+        if (nns.length === 0) break;
+        nns.sort((a, b) => adj[b.id].filter((s: any) => isNightShift(s)).length - adj[a.id].filter((s: any) => isNightShift(s)).length);
+        adj[nns[0].id][day] = '日';
+        if (day + 1 < daysInMonth && adj[nns[0].id][day + 1] === '明' && !isLocked(nns[0].id, day + 1)) adj[nns[0].id][day + 1] = '日';
+        nc--;
+      }
+    }
+
+    // 最終夜→明整合性
+    activeNurses.forEach(n => {
+      for (let d = 0; d < daysInMonth; d++) {
+        if (adj[n.id][d] === '夜' && d + 1 < daysInMonth && adj[n.id][d + 1] !== '明' && !isLocked(n.id, d + 1)) adj[n.id][d + 1] = '明';
+        if (adj[n.id][d] === '管夜' && d + 1 < daysInMonth && adj[n.id][d + 1] !== '管明' && !isLocked(n.id, d + 1)) adj[n.id][d + 1] = '管明';
+        if (adj[n.id][d] === '明' && (d === 0 || adj[n.id][d - 1] !== '夜') && !isLocked(n.id, d)) adj[n.id][d] = '休';
+        if (adj[n.id][d] === '管明' && (d === 0 || adj[n.id][d - 1] !== '管夜') && !isLocked(n.id, d)) adj[n.id][d] = '休';
       }
     });
 
@@ -3592,9 +3645,30 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
                         const shift = (scheduleDisplayData[nurse.id] || [])[i];
                         if (shift === '夜' || shift === '管夜') count++;
                       });
+                      // getNightReq と同じロジックで夜勤必要数を計算
+                      const nightRequired = (() => {
+                        const firstDow = new Date(targetYear, targetMonth, 1).getDay();
+                        const weeks: { s: number; e: number; c: number }[] = [];
+                        let cur = 1, wi = 0;
+                        const dUS = firstDow === 0 ? 0 : (7 - firstDow);
+                        if (dUS > 0) {
+                          weeks.push({ s: 1, e: Math.min(dUS, daysInMonth), c: generateConfig.startWithThree ? generateConfig.nightShiftPattern[0] : generateConfig.nightShiftPattern[1] });
+                          cur = dUS + 1; wi = 1;
+                        }
+                        while (cur <= daysInMonth) {
+                          const pi = generateConfig.startWithThree ? (wi % 2) : ((wi + 1) % 2);
+                          const ed = Math.min(cur + 6, daysInMonth);
+                          weeks.push({ s: cur, e: ed, c: generateConfig.nightShiftPattern[pi] });
+                          cur = ed + 1; wi++;
+                        }
+                        const d = i + 1;
+                        for (const p of weeks) { if (d >= p.s && d <= p.e) return p.c; }
+                        return 3;
+                      })();
                       return (
-                        <td key={i} className={`border text-center text-purple-700 ${isMaximized ? 'p-0 text-[10px]' : 'p-1'} ${count < 2 ? 'bg-red-200 text-red-700' : count > 3 ? 'bg-yellow-200 text-yellow-700' : ''}`}>
-                          {count}
+                        <td key={i} className={`border text-center text-purple-700 ${isMaximized ? 'p-0 text-[10px]' : 'p-1'} ${count < nightRequired ? 'bg-red-200 text-red-700' : count > nightRequired ? 'bg-yellow-200 text-yellow-700' : ''}`}>
+                          <div>{count}</div>
+                          <div className="text-[9px] text-gray-400">/{nightRequired}</div>
                         </td>
                       );
                     })}
@@ -3636,7 +3710,7 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
                       return (
                         <td key={i} className={`border text-center text-blue-700 ${isMaximized ? 'p-0 text-[10px]' : 'p-1'} ${count < minRequired ? 'bg-red-200 text-red-700' : count > minRequired + 2 ? 'bg-yellow-200 text-yellow-700' : ''}`}>
                           <div>{count}</div>
-                          {!isMaximized && <div className="text-[9px] text-gray-400">/{minRequired}</div>}
+                          <div className="text-[9px] text-gray-400">/{minRequired}</div>
                         </td>
                       );
                     })}
