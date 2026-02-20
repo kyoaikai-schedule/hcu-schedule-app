@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Calendar, Settings, Moon, Sun, Clock, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, LogOut, Lock, Download, Upload, Edit2, Save, X, Eye, Users, FileSpreadsheet, Activity, Maximize2, Minimize2 } from 'lucide-react';
-import * as XLSX from 'xlsx';
+import * as XLSX from 'xlsx-js-style';
 import { supabase } from './lib/supabase';
 
 // ============================================
@@ -2126,29 +2126,248 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
     setGeneratingPhase('');
   };
 
-  // Excel出力
-  const exportToExcel = () => {
-    if (!schedule) {
-      alert('勤務表が生成されていません');
-      return;
+  // Excel用セルスタイル（シフト種別ごとの背景色・文字色）
+  const getShiftExcelStyle = (shift: string | null) => {
+    const border = {
+      top: { style: 'thin', color: { rgb: 'CCCCCC' } },
+      bottom: { style: 'thin', color: { rgb: 'CCCCCC' } },
+      left: { style: 'thin', color: { rgb: 'CCCCCC' } },
+      right: { style: 'thin', color: { rgb: 'CCCCCC' } }
+    };
+    const center = { horizontal: 'center', vertical: 'center' };
+    const base = { border, alignment: center };
+
+    switch (shift) {
+      case '日': return { ...base, fill: { fgColor: { rgb: 'DBEAFE' } }, font: { color: { rgb: '1D4ED8' } } };
+      case '夜': return { ...base, fill: { fgColor: { rgb: 'EDE9FE' } }, font: { color: { rgb: '7C3AED' }, bold: true } };
+      case '明': return { ...base, fill: { fgColor: { rgb: 'FCE7F3' } }, font: { color: { rgb: 'DB2777' } } };
+      case '管夜': return { ...base, fill: { fgColor: { rgb: 'CCFBF1' } }, font: { color: { rgb: '0F766E' }, bold: true } };
+      case '管明': return { ...base, fill: { fgColor: { rgb: 'CFFAFE' } }, font: { color: { rgb: '0891B2' } } };
+      case '休': return { ...base, fill: { fgColor: { rgb: 'E5E7EB' } }, font: { color: { rgb: '6B7280' } } };
+      case '有': return { ...base, fill: { fgColor: { rgb: 'D1FAE5' } }, font: { color: { rgb: '059669' } } };
+      default: return { ...base, font: {} };
     }
+  };
 
+  // 曜日ヘッダーのスタイル
+  const getDowExcelStyle = (dow: string, isNationalHoliday: boolean) => {
+    const border = {
+      top: { style: 'thin', color: { rgb: 'CCCCCC' } },
+      bottom: { style: 'thin', color: { rgb: 'CCCCCC' } },
+      left: { style: 'thin', color: { rgb: 'CCCCCC' } },
+      right: { style: 'thin', color: { rgb: 'CCCCCC' } }
+    };
+    const center = { horizontal: 'center', vertical: 'center' };
+    if (dow === '日' || isNationalHoliday) return { border, alignment: center, fill: { fgColor: { rgb: 'FEE2E2' } }, font: { color: { rgb: 'EF4444' }, bold: true } };
+    if (dow === '土') return { border, alignment: center, fill: { fgColor: { rgb: 'DBEAFE' } }, font: { color: { rgb: '3B82F6' }, bold: true } };
+    return { border, alignment: center, fill: { fgColor: { rgb: 'F3F4F6' } }, font: { bold: true } };
+  };
+
+  // Excel出力（カラー対応）
+  const exportToExcel = () => {
+    if (!schedule) { alert('勤務表が生成されていません'); return; }
+
+    const holidayList = getJapaneseHolidays(targetYear, targetMonth);
     const wb = XLSX.utils.book_new();
-    const scheduleData = [
-      [`${departmentName} ${targetYear}年${targetMonth + 1}月 勤務表`],
-      ['氏名', '役職', ...Array.from({ length: daysInMonth }, (_, i) => `${i + 1}`)]
-    ];
 
+    // ヘッダー行1: タイトル
+    const row0 = [`${departmentName} ${targetYear}年${targetMonth + 1}月 勤務表`];
+
+    // ヘッダー行2: 曜日
+    const dowRow: string[] = ['', ''];
+    for (let i = 0; i < daysInMonth; i++) {
+      dowRow.push(getDayOfWeek(targetYear, targetMonth, i + 1));
+    }
+    dowRow.push('夜', '日', '休', '勤');
+
+    // ヘッダー行3: 日付
+    const dayRow: string[] = ['氏名', '役職'];
+    for (let i = 0; i < daysInMonth; i++) dayRow.push(String(i + 1));
+    dayRow.push('', '', '', '');
+
+    const data: string[][] = [row0, dowRow, dayRow];
+
+    // 職員データ
     activeNurses.forEach(nurse => {
       const shifts = schedule.data[nurse.id] || [];
-      scheduleData.push([nurse.name, nurse.position, ...shifts.map(s => s || '-')]);
+      const nightCount = shifts.filter((s: any) => s === '夜' || s === '管夜').length;
+      const dayCount = shifts.filter((s: any) => s === '日').length;
+      const offCount = shifts.filter((s: any) => s === '休' || s === '有').length;
+      const workCount = shifts.filter((s: any) => s && s !== '休' && s !== '有' && s !== '明' && s !== '管明').length;
+      data.push([nurse.name, nurse.position, ...shifts.map((s: any) => s || ''), String(nightCount), String(dayCount), String(offCount), String(workCount)]);
     });
 
-    const ws = XLSX.utils.aoa_to_sheet(scheduleData);
-    XLSX.utils.book_append_sheet(wb, ws, '勤務表');
+    // サマリー行（夜勤人数、日勤人数）
+    const nightRow: string[] = ['夜勤人数', ''];
+    const dayStaffRow: string[] = ['日勤人数', ''];
+    for (let i = 0; i < daysInMonth; i++) {
+      let nc = 0, dc = 0;
+      activeNurses.forEach(n => {
+        const s = (schedule.data[n.id] || [])[i];
+        if (s === '夜' || s === '管夜') nc++;
+        if (s === '日') dc++;
+      });
+      nightRow.push(String(nc));
+      dayStaffRow.push(String(dc));
+    }
+    nightRow.push('', '', '', '');
+    dayStaffRow.push('', '', '', '');
+    data.push(nightRow, dayStaffRow);
 
-    const fileName = `${departmentName}_勤務表_${targetYear}年${targetMonth + 1}月_${new Date().toISOString().slice(0, 10)}.xlsx`;
-    XLSX.writeFile(wb, fileName);
+    const ws = XLSX.utils.aoa_to_sheet(data);
+
+    // 列幅設定
+    const cols: { wch: number }[] = [{ wch: 14 }, { wch: 6 }];
+    for (let i = 0; i < daysInMonth; i++) cols.push({ wch: 4 });
+    cols.push({ wch: 4 }, { wch: 4 }, { wch: 4 }, { wch: 4 });
+    ws['!cols'] = cols;
+
+    // セルスタイル適用
+    const border = { top: { style: 'thin', color: { rgb: 'CCCCCC' } }, bottom: { style: 'thin', color: { rgb: 'CCCCCC' } }, left: { style: 'thin', color: { rgb: 'CCCCCC' } }, right: { style: 'thin', color: { rgb: 'CCCCCC' } } };
+
+    // 曜日行のスタイル
+    for (let i = 0; i < daysInMonth; i++) {
+      const dow = getDayOfWeek(targetYear, targetMonth, i + 1);
+      const isNatHol = holidayList.includes(i + 1);
+      const cellRef = XLSX.utils.encode_cell({ r: 1, c: i + 2 });
+      if (ws[cellRef]) ws[cellRef].s = getDowExcelStyle(dow, isNatHol);
+      const dayCellRef = XLSX.utils.encode_cell({ r: 2, c: i + 2 });
+      if (ws[dayCellRef]) ws[dayCellRef].s = getDowExcelStyle(dow, isNatHol);
+    }
+
+    // シフトセルのスタイル
+    activeNurses.forEach((nurse, nIdx) => {
+      const shifts = schedule.data[nurse.id] || [];
+      for (let i = 0; i < daysInMonth; i++) {
+        const cellRef = XLSX.utils.encode_cell({ r: nIdx + 3, c: i + 2 });
+        if (ws[cellRef]) ws[cellRef].s = getShiftExcelStyle(shifts[i]);
+      }
+      // 名前セル
+      const nameRef = XLSX.utils.encode_cell({ r: nIdx + 3, c: 0 });
+      if (ws[nameRef]) ws[nameRef].s = { border, font: { bold: true } };
+    });
+
+    // タイトル行スタイル
+    const titleRef = XLSX.utils.encode_cell({ r: 0, c: 0 });
+    if (ws[titleRef]) ws[titleRef].s = { font: { bold: true, sz: 14 } };
+    // タイトル行マージ
+    ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: daysInMonth + 1 } }];
+
+    XLSX.utils.book_append_sheet(wb, ws, '勤務表');
+    XLSX.writeFile(wb, `${departmentName}_勤務表_${targetYear}年${targetMonth + 1}月_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+
+  // 希望一覧Excel出力（カラー対応）
+  const exportRequestsToExcel = () => {
+    const monthKey = `${targetYear}-${targetMonth}`;
+    const monthReqs = requests[monthKey] || {};
+    const holidayList = getJapaneseHolidays(targetYear, targetMonth);
+
+    const wb = XLSX.utils.book_new();
+
+    // ヘッダー
+    const row0 = [`${departmentName} ${targetYear}年${targetMonth + 1}月 希望一覧`];
+    const dowRow: string[] = ['', ''];
+    for (let i = 0; i < daysInMonth; i++) dowRow.push(getDayOfWeek(targetYear, targetMonth, i + 1));
+    dowRow.push('合計');
+    const dayRow: string[] = ['氏名', '役職'];
+    for (let i = 0; i < daysInMonth; i++) dayRow.push(String(i + 1));
+    dayRow.push('');
+
+    const data: string[][] = [row0, dowRow, dayRow];
+
+    // 職員データ
+    activeNurses.forEach(nurse => {
+      const nurseReqs = monthReqs[String(nurse.id)] || {};
+      const constraints = prevMonthConstraints[nurse.id] || {};
+      const row: string[] = [nurse.name, nurse.position];
+      let count = 0;
+      for (let i = 0; i < daysInMonth; i++) {
+        const day = i + 1;
+        const req = nurseReqs[day];
+        const con = constraints[day];
+        if (req) { row.push(req); count++; }
+        else if (con) { row.push(`前:${con}`); }
+        else { row.push(''); }
+      }
+      row.push(String(count));
+      data.push(row);
+    });
+
+    // 希望人数サマリー行
+    const summaryRow: string[] = ['希望人数', ''];
+    for (let i = 0; i < daysInMonth; i++) {
+      const day = i + 1;
+      let count = 0;
+      Object.values(monthReqs).forEach((reqs: any) => { if (reqs[day]) count++; });
+      summaryRow.push(count > 0 ? String(count) : '');
+    }
+    summaryRow.push('');
+    data.push(summaryRow);
+
+    const ws = XLSX.utils.aoa_to_sheet(data);
+
+    // 列幅
+    const cols: { wch: number }[] = [{ wch: 14 }, { wch: 6 }];
+    for (let i = 0; i < daysInMonth; i++) cols.push({ wch: 5 });
+    cols.push({ wch: 5 });
+    ws['!cols'] = cols;
+
+    const border = { top: { style: 'thin', color: { rgb: 'CCCCCC' } }, bottom: { style: 'thin', color: { rgb: 'CCCCCC' } }, left: { style: 'thin', color: { rgb: 'CCCCCC' } }, right: { style: 'thin', color: { rgb: 'CCCCCC' } } };
+
+    // 曜日・日付行スタイル
+    for (let i = 0; i < daysInMonth; i++) {
+      const dow = getDayOfWeek(targetYear, targetMonth, i + 1);
+      const isNatHol = holidayList.includes(i + 1);
+      const cellRef = XLSX.utils.encode_cell({ r: 1, c: i + 2 });
+      if (ws[cellRef]) ws[cellRef].s = getDowExcelStyle(dow, isNatHol);
+      const dayCellRef = XLSX.utils.encode_cell({ r: 2, c: i + 2 });
+      if (ws[dayCellRef]) ws[dayCellRef].s = getDowExcelStyle(dow, isNatHol);
+    }
+
+    // 希望セルのスタイル
+    activeNurses.forEach((nurse, nIdx) => {
+      const nurseReqs = monthReqs[String(nurse.id)] || {};
+      const constraints = prevMonthConstraints[nurse.id] || {};
+      for (let i = 0; i < daysInMonth; i++) {
+        const day = i + 1;
+        const cellRef = XLSX.utils.encode_cell({ r: nIdx + 3, c: i + 2 });
+        if (!ws[cellRef]) continue;
+        const req = nurseReqs[day];
+        const con = constraints[day];
+        if (req) {
+          ws[cellRef].s = getShiftExcelStyle(req);
+        } else if (con) {
+          ws[cellRef].s = { border, alignment: { horizontal: 'center', vertical: 'center' }, fill: { fgColor: { rgb: 'FFF7ED' } }, font: { color: { rgb: 'EA580C' }, sz: 9 } };
+        } else {
+          ws[cellRef].s = { border, alignment: { horizontal: 'center', vertical: 'center' } };
+        }
+      }
+      // 名前セル
+      const nameRef = XLSX.utils.encode_cell({ r: nIdx + 3, c: 0 });
+      if (ws[nameRef]) ws[nameRef].s = { border, font: { bold: true } };
+    });
+
+    // 希望人数行のスタイル（3人以上で赤背景）
+    const sumRowIdx = activeNurses.length + 3;
+    for (let i = 0; i < daysInMonth; i++) {
+      const cellRef = XLSX.utils.encode_cell({ r: sumRowIdx, c: i + 2 });
+      if (!ws[cellRef]) continue;
+      const val = parseInt(ws[cellRef].v) || 0;
+      ws[cellRef].s = {
+        border, alignment: { horizontal: 'center', vertical: 'center' },
+        fill: val >= 3 ? { fgColor: { rgb: 'FEE2E2' } } : { fgColor: { rgb: 'FFFBEB' } },
+        font: val >= 3 ? { color: { rgb: 'DC2626' }, bold: true } : { bold: true }
+      };
+    }
+
+    // タイトル
+    const titleRef = XLSX.utils.encode_cell({ r: 0, c: 0 });
+    if (ws[titleRef]) ws[titleRef].s = { font: { bold: true, sz: 14 } };
+    ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: daysInMonth + 1 } }];
+
+    XLSX.utils.book_append_sheet(wb, ws, '希望一覧');
+    XLSX.writeFile(wb, `${departmentName}_希望一覧_${targetYear}年${targetMonth + 1}月_${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
   // アクセスコード一覧をコピー
@@ -4518,6 +4737,13 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
               <div className="flex justify-between items-center mb-4">
                 <h3 className="text-xl font-bold">希望一覧（{targetYear}年{targetMonth + 1}月）</h3>
                 <div className="flex items-center gap-2">
+                  <button
+                    onClick={exportRequestsToExcel}
+                    className="px-3 py-1.5 bg-emerald-100 text-emerald-700 rounded-lg text-sm hover:bg-emerald-200 transition-colors flex items-center gap-1"
+                  >
+                    <Download size={14} />
+                    Excel出力
+                  </button>
                   <button
                     onClick={async () => {
                       await reloadRequestsFromDB();
