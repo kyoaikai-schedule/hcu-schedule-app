@@ -21,13 +21,17 @@ const SHIFT_TYPES = {
   管夜: { name: '管理夜勤', hours: 14.5, color: 'bg-teal-100 text-teal-700' },
   管明: { name: '管理夜明', hours: 0, color: 'bg-cyan-100 text-cyan-700' },
   休: { name: '公休', hours: 0, color: 'bg-gray-100 text-gray-600' },
-  有: { name: '有休', hours: 0, color: 'bg-emerald-100 text-emerald-700' }
+  有: { name: '有休', hours: 0, color: 'bg-emerald-100 text-emerald-700' },
+  午前半: { name: '午前半休', hours: 3.75, color: 'bg-lime-100 text-lime-700' },
+  午後半: { name: '午後半休', hours: 3.75, color: 'bg-orange-100 text-orange-700' },
 };
 
-const VALID_SHIFTS = ['日', '夜', '明', '管夜', '管明', '休', '有'];
+const VALID_SHIFTS = ['日', '夜', '明', '管夜', '管明', '休', '有', '午前半', '午後半'];
 const sanitizeShift = (s: any): string | null => {
   if (!s) return null;
   const str = String(s).trim();
+  if (str === '午前半' || str === '前半' || str === 'AM半') return '午前半';
+  if (str === '午後半' || str === '後半' || str === 'PM半') return '午後半';
   return VALID_SHIFTS.includes(str) ? str : null;
 };
 
@@ -2157,6 +2161,8 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
       case '管明': return { ...base, fill: { fgColor: { rgb: 'CFFAFE' } }, font: { color: { rgb: '0891B2' } } };
       case '休': return { ...base, fill: { fgColor: { rgb: 'E5E7EB' } }, font: { color: { rgb: '6B7280' } } };
       case '有': return { ...base, fill: { fgColor: { rgb: 'D1FAE5' } }, font: { color: { rgb: '059669' } } };
+      case '午前半': return { ...base, fill: { fgColor: { rgb: 'ECFCCB' } }, font: { color: { rgb: '65A30D' } } };
+      case '午後半': return { ...base, fill: { fgColor: { rgb: 'FFEDD5' } }, font: { color: { rgb: 'EA580C' } } };
       default: return { ...base, font: {} };
     }
   };
@@ -2204,7 +2210,8 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
       const shifts = schedule.data[nurse.id] || [];
       const nightCount = shifts.filter((s: any) => s === '夜' || s === '管夜').length;
       const dayCount = shifts.filter((s: any) => s === '日').length;
-      const offCount = shifts.filter((s: any) => s === '休' || s === '有').length;
+      const offCount = shifts.filter((s: any) => s === '休' || s === '有').length
+        + shifts.filter((s: any) => s === '午前半' || s === '午後半').length * 0.5;
       const workCount = shifts.filter((s: any) => s && s !== '休' && s !== '有' && s !== '明' && s !== '管明').length;
       data.push([nurse.name, nurse.position, ...shifts.map((s: any) => s || ''), String(nightCount), String(dayCount), String(offCount), String(workCount)]);
     });
@@ -3892,7 +3899,7 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
           //     バックアップあり（手動設定した夜）→ 元の値に復元
           //     バックアップなし（自動生成/DB由来の夜）→ 翌日・翌々日はそのまま変更しない
           const handleCellClick = (nurseId: any, dayIndex: number, currentShift: string | null) => {
-            const CYCLE = ['日', '夜', '管夜', '休', '有', null];
+            const CYCLE = ['日', '夜', '管夜', '休', '有', '午前半', '午後半', null];
             const currentIdx = currentShift ? CYCLE.indexOf(currentShift) : -1;
             const nextIdx = (currentShift === '明' || currentShift === '管明') ? CYCLE.indexOf('休') : (currentIdx >= 0 ? (currentIdx + 1) % CYCLE.length : 0);
             const newShift = CYCLE[nextIdx];
@@ -4094,8 +4101,9 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
                     const stats = {
                       night: shifts.filter(s => s === '夜' || s === '管夜').length,
                       day: shifts.filter(s => s === '日').length,
-                      off: shifts.filter(s => s === '休' || s === '有').length,
-                      work: shifts.filter(s => s && s !== '休' && s !== '有').length
+                      off: shifts.filter(s => s === '休' || s === '有').length
+                        + shifts.filter(s => s === '午前半' || s === '午後半').length * 0.5,
+                      work: shifts.filter(s => s && s !== '休' && s !== '有' && s !== '午前半' && s !== '午後半').length
                     };
                     
                     return (
@@ -4236,12 +4244,12 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
                       const day = i + 1;
                       const isYearEnd = targetMonth === 11 && (day === 30 || day === 31);
                       const isNewYear = targetMonth === 0 && (day >= 1 && day <= 3);
-                      const minRequired = isYearEnd ? generateConfig.yearEndDayStaff :
-                                          isNewYear ? generateConfig.newYearDayStaff :
-                                          isWeekend ? generateConfig.weekendDayStaff :
-                                          generateConfig.weekdayDayStaff;
                       const holidayListF = getJapaneseHolidays(targetYear, targetMonth);
                       const isNatHolF = holidayListF.includes(day);
+                      const minRequired = isYearEnd ? generateConfig.yearEndDayStaff :
+                                          isNewYear ? generateConfig.newYearDayStaff :
+                                          (isWeekend || isNatHolF) ? generateConfig.weekendDayStaff :
+                                          generateConfig.weekdayDayStaff;
                       const isStrictDay = isWeekend || isNatHolF || isYearEnd || isNewYear;
                       const isDeviation = isStrictDay
                         ? count !== minRequired
@@ -4262,6 +4270,7 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
                       activeNurses.forEach(nurse => {
                         const shift = (scheduleDisplayData[nurse.id] || [])[i];
                         if (shift === '休' || shift === '有') count++;
+                        else if (shift === '午前半' || shift === '午後半') count += 0.5;
                       });
                       return (
                         <td key={i} className={`border text-center text-gray-600 ${isMaximized ? 'p-0 text-[10px]' : 'p-1'}`}>
@@ -4277,7 +4286,7 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
                       let count = 0;
                       activeNurses.forEach(nurse => {
                         const shift = (scheduleDisplayData[nurse.id] || [])[i];
-                        if (shift && shift !== '休' && shift !== '有' && shift !== '明') count++;
+                        if (shift && shift !== '休' && shift !== '有' && shift !== '明' && shift !== '管明' && shift !== '午前半' && shift !== '午後半') count++;
                       });
                       return (
                         <td key={i} className={`border text-center text-amber-700 ${isMaximized ? 'p-0 text-[10px]' : 'p-1'}`}>
@@ -4863,6 +4872,8 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
                                 req === '明' ? 'bg-pink-100' :
                                 req === '管夜' ? 'bg-teal-100' :
                                 req === '管明' ? 'bg-cyan-100' :
+                                req === '午前半' ? 'bg-lime-100' :
+                                req === '午後半' ? 'bg-orange-100' :
                                 con ? 'bg-orange-50' : ''
                               }`}>
                                 {req && <div className="font-medium text-xs">{req}</div>}
