@@ -309,7 +309,7 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
   const [prevMonthConstraints, setPrevMonthConstraints] = useState<any>({});
   
   // 職員別シフト設定: { nurseId: { maxNightShifts: number, noNightShift: boolean, noDayShift: boolean } }
-  const [nurseShiftPrefs, setNurseShiftPrefs] = useState<Record<number, { maxNightShifts: number; noNightShift: boolean; noDayShift: boolean; excludeFromMaxDaysOff: boolean }>>({});
+  const [nurseShiftPrefs, setNurseShiftPrefs] = useState<Record<number, { maxNightShifts: number; noNightShift: boolean; noDayShift: boolean; excludeFromMaxDaysOff: boolean; maxRequests: number }>>({});
   const [showNurseShiftPrefs, setShowNurseShiftPrefs] = useState(false);
   
   // 前月データ関連（プレビュー用）
@@ -2472,6 +2472,21 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
     const monthKey = `${targetYear}-${targetMonth}`;
     const nurseIdKey = String(staffNurseId);
 
+    // 希望上限チェック（新しい希望を追加する操作のみ）
+    const maxReq = staffNurseId ? (nurseShiftPrefs[staffNurseId]?.maxRequests || 0) : 0;
+    if (maxReq > 0) {
+      const currentReqs = requests[monthKey]?.[nurseIdKey] || {};
+      const currentVal = currentReqs[day] || null;
+      // 空セルからの新規追加の場合のみチェック
+      if (!currentVal) {
+        const currentCount = Object.entries(currentReqs).filter(([, v]) => v !== '明' && v !== '管明').length;
+        if (currentCount >= maxReq) {
+          alert('希望の上限に達しています');
+          return;
+        }
+      }
+    }
+
     // DB保存用の変更記録
     const dbChanges: Record<number, string | null> = {};
 
@@ -3249,7 +3264,8 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
     const monthKey = `${targetYear}-${targetMonth}`;
     const myIdKey = String(staffNurseId);
     const myRequests = requests[monthKey]?.[myIdKey] || {};
-    const requestCount = Object.keys(myRequests).length;
+    const requestCount = Object.entries(myRequests).filter(([_, v]) => v !== '明' && v !== '管明').length;
+    const myMaxRequests = nurseShiftPrefs[staffNurseId]?.maxRequests || 0;
 
     return (
       <div className="min-h-screen bg-gradient-to-br from-emerald-50 via-teal-50 to-cyan-100 p-4 md:p-6">
@@ -3310,7 +3326,12 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
                 </div>
                 <div>
                   <p className="text-sm text-gray-500">入力済み希望</p>
-                  <p className="text-2xl font-bold text-emerald-600">{requestCount}日</p>
+                  <p className="text-2xl font-bold text-emerald-600">
+                    {myMaxRequests > 0 ? `${requestCount}/${myMaxRequests}日` : `${requestCount}日`}
+                  </p>
+                  {myMaxRequests > 0 && requestCount >= myMaxRequests && (
+                    <p className="text-sm font-bold text-red-500">上限に達しました</p>
+                  )}
                 </div>
               </div>
               <button
@@ -5113,9 +5134,10 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
 
                 <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 mb-4">
                   <p className="text-sm text-blue-800">
-                    <strong>💡 説明：</strong>職員ごとに夜勤の最大回数、日勤なし・夜勤なし、休日上限除外（退職有給消化等）を設定できます。
+                    <strong>💡 説明：</strong>職員ごとに夜勤の最大回数、日勤なし・夜勤なし、休日上限除外（退職有給消化等）、希望上限を設定できます。
                     自動生成時にこの設定が反映されます。
                     未設定の場合は共通設定（最大{generateConfig.maxNightShifts}回）が適用されます。
+                    「希望上限」は職員が入力できる希望数の上限です（0=無制限）。明・管明は自動設定のためカウントに含まれません。
                   </p>
                 </div>
 
@@ -5129,11 +5151,12 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
                         <th className="border p-2 text-center">夜勤なし</th>
                         <th className="border p-2 text-center">日勤なし</th>
                         <th className="border p-2 text-center">休日上限除外</th>
+                        <th className="border p-2 text-center">希望上限</th>
                       </tr>
                     </thead>
                     <tbody>
                       {activeNurses.map((nurse: any) => {
-                        const pref = nurseShiftPrefs[nurse.id] || { maxNightShifts: generateConfig.maxNightShifts, noNightShift: false, noDayShift: false, excludeFromMaxDaysOff: false };
+                        const pref = nurseShiftPrefs[nurse.id] || { maxNightShifts: generateConfig.maxNightShifts, noNightShift: false, noDayShift: false, excludeFromMaxDaysOff: false, maxRequests: 0 };
                         return (
                           <tr key={nurse.id} className="hover:bg-gray-50">
                             <td className="border p-2 font-medium whitespace-nowrap">
@@ -5198,6 +5221,23 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
                                 }}
                                 className="w-5 h-5 text-orange-600 rounded"
                               />
+                            </td>
+                            <td className="border p-2 text-center">
+                              <select
+                                value={pref.maxRequests || 0}
+                                onChange={(e) => {
+                                  const val = parseInt(e.target.value);
+                                  setNurseShiftPrefs(prev => ({
+                                    ...prev,
+                                    [nurse.id]: { ...pref, maxRequests: val }
+                                  }));
+                                }}
+                                className="px-2 py-1 border rounded text-center w-20"
+                              >
+                                {Array.from({ length: 16 }, (_, i) => (
+                                  <option key={i} value={i}>{i === 0 ? '無制限' : `${i}個`}</option>
+                                ))}
+                              </select>
                             </td>
                           </tr>
                         );
