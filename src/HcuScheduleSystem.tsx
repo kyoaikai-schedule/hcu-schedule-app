@@ -3673,7 +3673,7 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
             <div className="bg-white/90 backdrop-blur-sm rounded-2xl shadow-lg p-5 mb-6 border border-white/50">
               <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-4">
                 <h2 className="text-lg font-bold text-gray-800">職員一覧（{activeNurses.length}名）</h2>
-                <div className="flex gap-2">
+                <div className="flex gap-2 items-center">
                   <button onClick={resetDisplayOrder} className="px-2 py-1 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded text-xs flex items-center gap-1 transition-colors">
                     <RotateCcw size={12} /> 並び順リセット
                   </button>
@@ -3684,6 +3684,9 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
                   </label>
                   <button onClick={() => setShowAddNurse(true)} className="px-3 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg flex items-center gap-2 text-sm transition-colors">
                     <Plus size={16} /> 追加
+                  </button>
+                  <button onClick={() => setShowSettings(false)} className="p-2 hover:bg-gray-100 rounded-full transition-colors">
+                    <X size={20} />
                   </button>
                 </div>
               </div>
@@ -4286,6 +4289,11 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
                 </>
               )}
             </div>
+              <div className="flex justify-end mt-4">
+                <button onClick={() => setShowSettings(false)} className="px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded-lg text-sm transition-colors">
+                  閉じる
+                </button>
+              </div>
           </div>
           </div>
         )}
