@@ -4637,7 +4637,6 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
                       const dowName = ['日', '月', '火', '水', '木', '金', '土'][dow];
                       const shifts = ['休', '有', '日', '夜', '管夜', '午前半', '午後半'];
                       const popX = Math.min(editingLimitDay.x, window.innerWidth - 320);
-                      const showAbove = editingLimitDay.y > window.innerHeight - 300;
                       return (
                         <>
                           <div className="fixed inset-0 z-40" onClick={() => setEditingLimitDay(null)} />
@@ -4645,8 +4644,7 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
                             className="fixed z-50 bg-white border-2 border-rose-200 rounded-xl p-4 shadow-2xl w-[300px]"
                             style={{
                               left: `${popX}px`,
-                              top: showAbove ? undefined : `${editingLimitDay.y + 4}px`,
-                              bottom: showAbove ? `${window.innerHeight - editingLimitDay.y + 8}px` : undefined,
+                              top: `${Math.max(8, Math.min(editingLimitDay.y + 4, window.innerHeight - 380))}px`,
                             }}
                           >
                             <div className="flex justify-between items-center mb-3">
@@ -7310,7 +7308,6 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
                       const dowName = ['日', '月', '火', '水', '木', '金', '土'][dow];
                       const shifts = ['休', '有', '日', '夜', '管夜', '午前半', '午後半'];
                       const popX = Math.min(editingLimitDay.x, window.innerWidth - 320);
-                      const showAbove = editingLimitDay.y > window.innerHeight - 300;
                       return (
                         <>
                           <div className="fixed inset-0 z-40" onClick={() => setEditingLimitDay(null)} />
@@ -7318,8 +7315,7 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
                             className="fixed z-50 bg-white border-2 border-rose-200 rounded-xl p-4 shadow-2xl w-[300px]"
                             style={{
                               left: `${popX}px`,
-                              top: showAbove ? undefined : `${editingLimitDay.y + 4}px`,
-                              bottom: showAbove ? `${window.innerHeight - editingLimitDay.y + 8}px` : undefined,
+                              top: `${Math.max(8, Math.min(editingLimitDay.y + 4, window.innerHeight - 380))}px`,
                             }}
                           >
                             <div className="flex justify-between items-center mb-3">
