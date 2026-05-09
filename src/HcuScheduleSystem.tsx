@@ -3763,6 +3763,7 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
                       <th className="border p-2 text-center w-16">順序</th>
                       <th className="border p-2 text-left">氏名</th>
                       <th className="border p-2 text-center">役職</th>
+                      <th className="border p-2 text-center">夜勤チーム</th>
                       <th className="border p-2 text-center">操作</th>
                     </tr>
                   </thead>
@@ -3794,6 +3795,23 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
                           ) : (
                             <span className={`text-xs px-2 py-1 rounded ${POSITIONS[nurse.position]?.color}`}>{nurse.position}</span>
                           )}
+                        </td>
+                        <td className="border p-2 text-center">
+                          <select
+                            value={nurse.team ?? ''}
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              updateNurse(nurse.id, { team: v === '' ? null : v });
+                            }}
+                            className="px-2 py-1 border rounded text-xs"
+                          >
+                            <option value="">未設定</option>
+                            <option value="A">A</option>
+                            <option value="B">B</option>
+                            <option value="C">C</option>
+                            <option value="D">D</option>
+                            <option value="E">E</option>
+                          </select>
                         </td>
                         <td className="border p-2 text-center">
                           {editingNurse === nurse.id ? (
@@ -5641,6 +5659,23 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
                           {nurse.position}
                         </span>
                         <span className="font-medium">{nurse.name}</span>
+                        <select
+                          value={nurse.team ?? ''}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            updateNurse(nurse.id, { team: v === '' ? null : v });
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                          className="px-1.5 py-0.5 border rounded text-xs bg-white"
+                          title="夜勤チーム"
+                        >
+                          <option value="">チーム未</option>
+                          <option value="A">A</option>
+                          <option value="B">B</option>
+                          <option value="C">C</option>
+                          <option value="D">D</option>
+                          <option value="E">E</option>
+                        </select>
                       </div>
                       <div className="flex gap-1">
                         <button
