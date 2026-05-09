@@ -3596,7 +3596,7 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
               onClick={onBack}
               className="w-full mt-6 px-4 py-3 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-xl transition-colors text-sm"
             >
-              ← 部門選択に戻る
+              ← 共愛会勤務表管理ポータルに戻る
             </button>
           )}
 

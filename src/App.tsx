@@ -1,8 +1,43 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import HcuScheduleSystem from './HcuScheduleSystem'
+
+// ポータル(admin-portal)URLを sessionStorage に記録し、「戻る」操作で参照する。
+// 初回ロード時の document.referrer が他オリジン (= ポータル) ならその URL を保存。
+// 直接アクセス時は記録がないため history.back() にフォールバック。
+const PORTAL_URL_KEY = 'kyoaikai_portal_url'
+
+const captureReferrer = () => {
+  try {
+    const ref = document.referrer
+    if (ref && !ref.startsWith(window.location.origin)) {
+      sessionStorage.setItem(PORTAL_URL_KEY, ref)
+    }
+  } catch {
+    // sessionStorage が無効な環境では何もしない
+  }
+}
+
+const goToPortal = () => {
+  let portalUrl: string | null = null
+  try {
+    portalUrl = sessionStorage.getItem(PORTAL_URL_KEY)
+  } catch { /* ignore */ }
+  if (portalUrl) {
+    window.location.href = portalUrl
+  } else if (window.history.length > 1) {
+    window.history.back()
+  } else {
+    // 何もできない場合は本画面のままにする (誤遷移を防ぐ)
+    alert('ポータル URL が記録されていません。共愛会勤務表管理ポータルを開いてからアクセスしてください。')
+  }
+}
 
 function App() {
   const [department, setDepartment] = useState<'HCU' | 'ER' | null>(null)
+
+  useEffect(() => {
+    captureReferrer()
+  }, [])
 
   if (!department) {
     return (
@@ -32,12 +67,18 @@ function App() {
               <span className="text-sm text-gray-400">Emergency Room</span>
             </button>
           </div>
+          <button
+            onClick={goToPortal}
+            className="mt-10 text-gray-500 hover:text-gray-700 text-sm underline transition-colors"
+          >
+            ← 共愛会勤務表管理ポータルに戻る
+          </button>
         </div>
       </div>
     )
   }
 
-  return <HcuScheduleSystem department={department} onBack={() => setDepartment(null)} />
+  return <HcuScheduleSystem department={department} onBack={goToPortal} />
 }
 
 export default App
