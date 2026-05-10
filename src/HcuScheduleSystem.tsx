@@ -8588,6 +8588,9 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
           solverAPIUrl={solverAPIUrl}
           solverAPIKey={solverAPIKey}
           activeNurses={activeNurses.map(n => ({ id: n.id, name: n.name, team: n.team }))}
+          ward={dbPrefix}
+          targetYear={targetYear}
+          targetMonth={targetMonth}
           onAcceptPattern={(data) => {
             const monthKey = `${targetYear}-${targetMonth}`;
             setSchedule({ month: monthKey, data });
