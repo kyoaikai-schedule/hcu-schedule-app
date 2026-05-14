@@ -8709,6 +8709,7 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
           ward={dbPrefix}
           targetYear={targetYear}
           targetMonth={targetMonth}
+          generateConfig={generateConfig}
           onAcceptPattern={(data) => {
             const monthKey = `${targetYear}-${targetMonth}`;
             setSchedule({ month: monthKey, data });
